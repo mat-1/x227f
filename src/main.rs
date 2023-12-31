@@ -16,6 +16,11 @@ use url::Url;
 use crate::data::Page;
 
 pub const USER_AGENT: &str = "Mozilla/5.0 (88x31 crawler by mat@matdoes.dev)";
+/// How many pages we're crawling at once.
+///
+/// You can set this to higher numbers like 100 and it'll work fine, but right
+/// now I have it set to a low number to avoid Neocities and archive.org's
+/// ratelimits.
 pub const CONCURRENT_CRAWLER_COUNT: usize = 5;
 /// How often we should recheck pages in the database.
 pub const RECRAWL_PAGES_INTERVAL_HOURS: u64 = 24 * 7;
@@ -31,6 +36,8 @@ pub const KNOWN_TRACKING_PARAMS: &[&str] = &["ref"];
 // pages that we can scrape but shouldn't follow links from.
 // this will include all subdomains.
 pub const DO_NOT_FOLLOW_LINKS_FROM_HOSTS: &[&str] = &["web.archive.org"];
+/// Hosts that shouldn't be scraped or indexed. Adding a host to this will
+/// retroactively remove it from the database.
 pub const BANNED_HOSTS: &[&str] = &[];
 
 #[tokio::main]
