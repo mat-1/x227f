@@ -1,4 +1,5 @@
 pub mod data;
+pub mod garbagecollect;
 pub mod processed;
 pub mod scrape;
 
@@ -19,9 +20,9 @@ pub const USER_AGENT: &str = "Mozilla/5.0 (88x31 crawler by mat@matdoes.dev)";
 /// How many pages we're crawling at once.
 ///
 /// You can set this to higher numbers like 100 and it'll work fine, but right
-/// now I have it set to a low number to avoid Neocities and archive.org's
-/// ratelimits.
-pub const CONCURRENT_CRAWLER_COUNT: usize = 5;
+/// now I have it set to a low number to avoid hitting Neocities and
+/// archive.org's ratelimits.
+pub const CONCURRENT_CRAWLER_COUNT: usize = 20;
 /// How often we should recheck pages in the database.
 pub const RECRAWL_PAGES_INTERVAL_HOURS: u64 = 24 * 7;
 /// How long buttons should be cached for. We won't explicitly go out and
@@ -64,6 +65,8 @@ async fn main() {
         )
         .init();
 
+    init_deadlock_detection();
+
     // make data/ and data/buttons/
     tokio::fs::create_dir_all("data/buttons").await.unwrap();
 
@@ -92,28 +95,44 @@ async fn main() {
         .await
         .unwrap();
 
+    let mut last_garbage_collected_at: Option<Instant> = None;
+
     loop {
         // save and refresh queue every 5 seconds
-
         tokio::time::sleep(Duration::from_secs(5)).await;
 
-        let crawl_data_clone = crawl_data.lock().clone();
-        // don't bother saving if the data is the same as before
-        if crawl_data_clone != previous_saved_data {
-            let save_start = Instant::now();
-            data::save_crawl_data(&crawl_data_clone).await;
-            let save_duration = save_start.elapsed();
-            info!("save took {save_duration:?}");
-            let save_start = Instant::now();
-            processed::save_processed_crawl_data(&crawl_data_clone)
-                .await
-                .unwrap();
-            let save_duration = save_start.elapsed();
-            info!("save processed took {save_duration:?}");
-            previous_saved_data = crawl_data_clone;
+        {
+            let crawl_data_clone = crawl_data.lock().clone();
+            // don't bother saving if the data is the same as before
+            if crawl_data_clone != previous_saved_data {
+                info!("saving...");
+                let save_start = Instant::now();
+                data::save_crawl_data(&crawl_data_clone).await;
+                let save_duration = save_start.elapsed();
+                info!("save took {save_duration:?}");
+                let save_start = Instant::now();
+                processed::save_processed_crawl_data(&crawl_data_clone)
+                    .await
+                    .unwrap();
+                let save_duration = save_start.elapsed();
+                info!("save processed took {save_duration:?}");
+                previous_saved_data = crawl_data_clone;
+            }
         }
+        info!("refreshing queue");
         let mut crawl_data = crawl_data.lock();
         crawl_data.refresh_queue();
+
+        if let Some(last_garbage_collected_at) = &mut last_garbage_collected_at {
+            if last_garbage_collected_at.elapsed() > Duration::from_secs(60 * 60) {
+                *last_garbage_collected_at = Instant::now();
+                garbagecollect::delete_unlinked_buttons(&crawl_data);
+            }
+        } else {
+            last_garbage_collected_at = Some(Instant::now());
+            garbagecollect::delete_unlinked_buttons(&previous_saved_data);
+        }
+
         info!("Queue size: {}", crawl_data.queue().len());
     }
 }
@@ -216,4 +235,26 @@ pub fn check_hosts_list_contains_url(hosts_list: &[&str], url: &Url) -> bool {
     hosts_list
         .iter()
         .any(|&domain| page_domain == domain || page_domain.ends_with(&format!(".{domain}")))
+}
+
+fn init_deadlock_detection() {
+    use parking_lot::deadlock;
+    use std::thread;
+    // Create a background thread which checks for deadlocks every 10s
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_secs(10));
+        let deadlocks = deadlock::check_deadlock();
+        if deadlocks.is_empty() {
+            continue;
+        }
+
+        println!("{} deadlocks detected", deadlocks.len());
+        for (i, threads) in deadlocks.iter().enumerate() {
+            println!("Deadlock #{i}");
+            for t in threads {
+                println!("Thread Id {:#?}", t.thread_id());
+                println!("{:#?}", t.backtrace());
+            }
+        }
+    });
 }
