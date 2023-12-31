@@ -1,4 +1,4 @@
-//! Convert the crawl.json into a smaller 88x31.json that's easier to do
+//! Convert the crawl.json into a smaller 88x31.{json,cbor} that's easier to do
 //! searches and calculations on.
 
 use std::collections::{BTreeSet, HashMap};
@@ -13,11 +13,16 @@ pub struct ProcessedData {
     pub pages: Vec<PageId>,
     /// A sorted vec of button hashes
     pub buttons: Vec<String>,
+    /// A sorted vec of titles and alt texts used for buttons
+    pub texts: Vec<String>,
     pub button_file_exts: Vec<String>,
     /// Indexes into `pages`
     pub links: Vec<Vec<usize>>,
     /// Indexes into `buttons`
     pub button_links: Vec<Vec<usize>>,
+    pub button_link_alts: Vec<Vec<Option<usize>>>,
+    pub button_link_titles: Vec<Vec<Option<usize>>>,
+
     pub backlinks: Vec<Vec<usize>>,
     pub button_backlinks: Vec<Vec<usize>>,
 }
@@ -46,6 +51,20 @@ pub fn process_crawl_data(crawl_data: &CrawlData) -> ProcessedData {
     }
     let buttons = buttons.into_iter().collect::<Vec<_>>();
 
+    // fill texts
+    let mut texts = BTreeSet::new();
+    for page in crawl_data.pages().values() {
+        for button in &page.buttons {
+            if let Some(title) = &button.title {
+                texts.insert(title.clone());
+            }
+            if let Some(alt) = &button.alt {
+                texts.insert(alt.clone());
+            }
+        }
+    }
+    let texts = texts.into_iter().collect::<Vec<_>>();
+
     let mut button_file_exts = Vec::new();
     for button in &buttons {
         button_file_exts.push(button_file_exts_hashmap[button].clone());
@@ -53,6 +72,9 @@ pub fn process_crawl_data(crawl_data: &CrawlData) -> ProcessedData {
 
     let mut links = vec![Vec::new(); pages.len()];
     let mut button_links = vec![Vec::new(); buttons.len()];
+    let mut button_link_alts = vec![Vec::new(); buttons.len()];
+    let mut button_link_titles = vec![Vec::new(); buttons.len()];
+
     let mut backlinks = vec![Vec::new(); pages.len()];
     let mut button_backlinks = vec![Vec::new(); buttons.len()];
     for (page_id, page) in crawl_data.pages().iter() {
@@ -74,6 +96,16 @@ pub fn process_crawl_data(crawl_data: &CrawlData) -> ProcessedData {
                 .binary_search(&button.hash)
                 .expect("button should be in buttons");
             button_links[button_index].push(page_id_index);
+            let alt_index = button
+                .alt
+                .as_ref()
+                .and_then(|alt| texts.binary_search(alt).ok());
+            button_link_alts[button_index].push(alt_index);
+            let title_index = button
+                .title
+                .as_ref()
+                .and_then(|title| texts.binary_search(title).ok());
+            button_link_titles[button_index].push(title_index);
             button_backlinks[page_id_index].push(button_index);
         }
     }
@@ -81,9 +113,14 @@ pub fn process_crawl_data(crawl_data: &CrawlData) -> ProcessedData {
     ProcessedData {
         pages,
         buttons,
+        texts,
         button_file_exts,
+
         links,
         button_links,
+        button_link_alts,
+        button_link_titles,
+
         backlinks,
         button_backlinks,
     }

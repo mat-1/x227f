@@ -85,6 +85,13 @@ async fn main() {
     }
 
     let mut previous_saved_data: CrawlData = initial_crawl_data.clone();
+
+    // we don't save crawl.json immediately so if the user accidentally messed up if
+    // they stop the program quickly enough it won't delete the database
+    processed::save_processed_crawl_data(&previous_saved_data)
+        .await
+        .unwrap();
+
     loop {
         // save and refresh queue every 5 seconds
 

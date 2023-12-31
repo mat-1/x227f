@@ -203,12 +203,6 @@ fn candidate_buttons_from_html(body: &str, res_url: &Url) -> Vec<CandidateButton
             continue;
         }
 
-        // if the href is the same as the image source, then it's not a page link and it
-        // should be skipped
-        if href == img_src.as_str() {
-            continue;
-        }
-
         let Some(button) = candidate_buttons.iter_mut().find(|b| b.img.url == img_src) else {
             // this shouldn't happen because we only add to existing_img_urls when we're
             // also adding to candidate_buttons
@@ -225,6 +219,12 @@ fn candidate_buttons_from_html(body: &str, res_url: &Url) -> Vec<CandidateButton
             continue;
         };
         if !matches!(href.scheme(), "http" | "https") {
+            continue;
+        }
+
+        // if the href is the same as the image source, then it's not a page link and it
+        // should be skipped
+        if href == img_src {
             continue;
         }
 
