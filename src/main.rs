@@ -30,11 +30,11 @@ pub const RECRAWL_PAGES_INTERVAL_HOURS: u64 = 24 * 7;
 ///
 /// Usually you can keep this the same as `RECRAWL_PAGES_INTERVAL_HOURS`.
 pub const RECRAWL_BUTTONS_INTERVAL_HOURS: u64 = 24 * 7;
-// url params that should be removed from page links before following and saving
-// them
+/// Url params that should be removed from page links before following and
+/// saving them.
 pub const KNOWN_TRACKING_PARAMS: &[&str] = &["ref"];
-// pages that we can scrape but shouldn't follow links from.
-// this will include all subdomains.
+/// Pages that we can scrape but shouldn't follow links from. This will also
+/// include all subdomains.
 pub const DO_NOT_FOLLOW_LINKS_FROM_HOSTS: &[&str] = &["web.archive.org"];
 /// Hosts that shouldn't be scraped or indexed. Adding a host to this will
 /// retroactively remove it from the database.

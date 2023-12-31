@@ -18,9 +18,6 @@ use crate::{
 use super::ScrapeContext;
 
 /// Scrape the given page.
-///
-/// Returns Ok(None) if we got redirected somewhere that was in
-/// already_scraping_pages.
 #[instrument(skip_all, fields(url = %res.url()))]
 pub async fn scrape_page_from_download(
     ctx: &ScrapeContext,

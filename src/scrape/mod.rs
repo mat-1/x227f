@@ -15,6 +15,8 @@ impl ScrapeContext {
                 .user_agent(USER_AGENT)
                 // requests shouldn't take more than 30 seconds
                 .timeout(std::time::Duration::from_secs(30))
+                // there's a few sites that have broken certificates that we still want to accept
+                .danger_accept_invalid_certs(true)
                 .build()
                 .unwrap(),
         }
