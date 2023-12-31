@@ -1,0 +1,35 @@
+[package]
+name = "x227f"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+base64 = "0.21.5"
+chrono = { version = "0.4.31", features = ["serde"] }
+eyre = "0.6.11"
+futures-util = "0.3.30"
+hex = "0.4.3"
+image = { version = "0.24.7", git = "https://github.com/image-rs/image", features = [
+    "webp-encoder",
+    "avif",
+    "avif-decoder",
+] }
+oxipng = "9.0.0"
+parking_lot = "0.12.1"
+percent-encoding = "2.3.1"
+reqwest = { version = "0.11.23", default-features = false, features = [
+    "rustls-tls",
+    "stream",
+] }
+scraper = "0.18.1"
+serde = "1.0.193"
+serde_cbor = "0.11.2"
+serde_json = "1.0.108"
+serde_with = "3.4.0"
+sha2 = "0.10.8"
+tokio = { version = "1.35.1", features = ["full"] }
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+url = { version = "2.5.0", features = ["serde"] }
