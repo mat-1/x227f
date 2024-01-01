@@ -16,7 +16,8 @@ use url::Url;
 
 use crate::data::Page;
 
-pub const USER_AGENT: &str = "Mozilla/5.0 (88x31 crawler by mat@matdoes.dev)";
+pub const USER_AGENT: &str =
+    "Mozilla/5.0 (88x31 crawler by mat@matdoes.dev +https://github.com/mat-1/x227f)";
 /// How many pages we're crawling at once.
 ///
 /// You can set this to higher numbers like 100 and it'll work fine, but right

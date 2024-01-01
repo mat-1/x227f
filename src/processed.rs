@@ -21,6 +21,8 @@ pub struct ProcessedData {
     /// Same length as `buttons`, indexes into `texts`
     pub button_names: Vec<Vec<usize>>,
     /// Same length as `buttons`, indexes into `pages`
+    pub button_links: Vec<Vec<usize>>,
+    /// Same length as `buttons`, indexes into `pages`
     pub button_backlinks: Vec<Vec<usize>>,
 
     /// Same length as `pages`, indexes into `pages`
@@ -92,6 +94,7 @@ pub fn process_crawl_data(crawl_data: &CrawlData) -> ProcessedData {
     }
 
     let mut button_names = vec![Vec::new(); buttons.len()];
+    let mut button_links = vec![Vec::new(); buttons.len()];
     let mut button_backlinks = vec![Vec::new(); buttons.len()];
 
     let mut links = vec![Vec::new(); pages.len()];
@@ -127,6 +130,7 @@ pub fn process_crawl_data(crawl_data: &CrawlData) -> ProcessedData {
                 links[page_id_index].push(Some(link_index));
                 backlinks[link_index].push(page_id_index);
                 backlink_buttons[link_index].push(button_index);
+                button_links[button_index].push(link_index);
             } else {
                 links[page_id_index].push(None);
             }
@@ -167,6 +171,7 @@ pub fn process_crawl_data(crawl_data: &CrawlData) -> ProcessedData {
 
         button_file_exts,
         button_names,
+        button_links,
         button_backlinks,
 
         links,
