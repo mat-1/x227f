@@ -134,8 +134,16 @@ fn candidate_buttons_from_html(body: &str, res_url: &Url) -> Vec<CandidateButton
             // not a valid src, skip
             continue;
         };
-        let alt = el.value().attr("alt").map(|s| s.to_owned());
-        let title = el.value().attr("title").map(|s| s.to_owned());
+        let alt = el
+            .value()
+            .attr("alt")
+            .map(|s| s.to_owned())
+            .filter(|s| !s.is_empty());
+        let title = el
+            .value()
+            .attr("title")
+            .map(|s| s.to_owned())
+            .filter(|s| !s.is_empty());
 
         // validate the width and height if present
         let width = el.value().attr("width").and_then(|s| s.parse::<u32>().ok());

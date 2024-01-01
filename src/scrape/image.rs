@@ -54,9 +54,7 @@ pub async fn scrape_images(
         }
     }
 
-    let results = results.into_iter().flatten().collect();
-
-    results
+    results.into_iter().flatten().collect()
 }
 
 #[instrument(skip_all, fields(url = %candidate.img.url))]
@@ -128,8 +126,17 @@ pub async fn scrape_image(
 
     // validate image size (potentially redundantly, since we sometimes validate the
     // first chunk of the response in download_88x31_image, but it's fine)
-    if !validate_image_size(&bytes, format).unwrap_or_default() {
-        return Ok(None);
+    match validate_image_size(&bytes, format) {
+        Some(false) => {
+            // not 88x31
+            return Ok(None);
+        }
+        Some(true) => {}
+        None => {
+            trace!("Bytes: {bytes:?}");
+            trace!("couldn't determine image size, aborting");
+            return Ok(None);
+        }
     }
 
     // compress/re-encode, hash, and save
@@ -284,6 +291,9 @@ async fn download_88x31_image(ctx: &ScrapeContext, url: Url) -> eyre::Result<Dow
     let image_url = if was_url_transformed { url } else { res_url };
 
     let res_headers = res.headers();
+
+    // check to make sure the content-type starts with image/
+    // we don't use this to determine the actual content type though
     let content_type = res_headers
         .get(reqwest::header::CONTENT_TYPE)
         .ok_or_else(|| {
@@ -291,20 +301,19 @@ async fn download_88x31_image(ctx: &ScrapeContext, url: Url) -> eyre::Result<Dow
             eyre!("missing content-type header")
         })?
         .to_str()?;
-    let Some(format) = mimetype_to_format(content_type) else {
-        // invalid format, just return an empty response
-        return Ok(DownloadImageResult {
-            bytes: vec![],
-            format: None,
-            url: Some(image_url),
-            redirect,
-        });
-    };
+    if !content_type.starts_with("image/") {
+        bail!(
+            "image content-type was not image/, content-type: {content_type}, requested url: {requesting_url}, headers: {res_headers:?}",
+            content_type = content_type,
+        );
+    }
 
     let mut bytes = Vec::new();
     let mut stream = res.bytes_stream();
 
     let mut checked_image_size_yet = false;
+
+    let mut format = None;
 
     while let Some(Ok(chunk)) = stream.next().await {
         bytes.extend_from_slice(&chunk);
@@ -324,10 +333,12 @@ async fn download_88x31_image(ctx: &ScrapeContext, url: Url) -> eyre::Result<Dow
         // 1024 bytes is probably way more than needed but it doesn't really matter.
         if bytes.len() >= 1024 && !checked_image_size_yet {
             checked_image_size_yet = true;
+            // this should most definitely not fail
+            format = Some(image::guess_format(&bytes)?);
             // idk when it's possible for this to fail but in theory someone could put a
             // bunch of data before the part of the format that has the size. the 1024 check
             // exists to reduce the chances of this happening but it still could.
-            if let Some(is_88x31) = validate_image_size(&bytes, format) {
+            if let Some(is_88x31) = validate_image_size(&bytes, format.unwrap()) {
                 if !is_88x31 {
                     return Ok(DownloadImageResult {
                         bytes: vec![],
@@ -342,9 +353,13 @@ async fn download_88x31_image(ctx: &ScrapeContext, url: Url) -> eyre::Result<Dow
         }
     }
 
+    if format.is_none() {
+        format = Some(image::guess_format(&bytes)?);
+    }
+
     Ok(DownloadImageResult {
         bytes,
-        format: Some(format),
+        format,
         url: Some(image_url),
         redirect,
     })

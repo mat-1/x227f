@@ -335,6 +335,19 @@ pub struct ButtonData {
     pub title: Option<String>,
 }
 
+impl ButtonData {
+    pub fn source_filename(&self) -> Option<String> {
+        if let Some(source) = &self.source {
+            let path = source.path().trim_end_matches('/');
+            let filename = path.split('/').last().unwrap_or_default();
+            let filename = filename.split('.').next().unwrap_or_default();
+            Some(filename.to_string())
+        } else {
+            None
+        }
+    }
+}
+
 impl fmt::Display for PageId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // displayed with slash between host and path unless there's no path
@@ -351,7 +364,7 @@ impl FromStr for PageId {
     type Err = url::ParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (host, path) = s.split_once('/').unwrap_or((s, ""));
+        let (host, path) = s.trim_end_matches('/').split_once('/').unwrap_or((s, ""));
         Ok(Self {
             host: host.to_string(),
             path: path.to_string(),
@@ -371,6 +384,7 @@ impl From<Url> for PageId {
         let path = url.path().to_string();
         let path = path.trim_start_matches('/');
         let path = path.trim_end_matches("/index.html");
+        let path = path.trim_end_matches('/');
         let path = path.to_string();
 
         Self { host, path }
