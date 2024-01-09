@@ -11,7 +11,10 @@ use serde_with::{DeserializeFromStr, SerializeDisplay};
 use tracing::{error, trace};
 use url::Url;
 
-use crate::{check_hosts_list_contains_url, BANNED_HOSTS, RECRAWL_PAGES_INTERVAL_HOURS};
+use crate::{
+    check_hosts_list_contains_url, ratelimiter::Ratelimiter, BANNED_HOSTS,
+    RECRAWL_PAGES_INTERVAL_HOURS,
+};
 
 /// Something that uniquely identifies a page. You can convert a URL to this,
 /// but you can't convert it back to a URL since PageId removes information.
@@ -29,6 +32,10 @@ pub struct CrawlData {
     crawling_pages: Vec<Url>,
     queue: VecDeque<Url>,
     pages: HashMap<PageId, Page>,
+
+    #[serde(default)]
+    #[serde(skip)]
+    pub ratelimiter: Ratelimiter,
 
     // this is a hashset so it can be looked up quickly
     #[serde(default)]
@@ -271,7 +278,28 @@ impl CrawlData {
     }
 
     pub fn pop_and_start_crawling(&mut self) -> Option<Url> {
-        let url = self.queue.pop_front()?;
+        if self.queue.is_empty() {
+            return None;
+        }
+
+        let mut queue_index = None;
+        for (i, url) in self.queue.iter().enumerate() {
+            // get the first url that's not being ratelimited
+            if self
+                .ratelimiter
+                .try_request(url.host_str().unwrap_or_default())
+            {
+                queue_index = Some(i);
+                break;
+            }
+        }
+
+        let queue_index = queue_index?;
+
+        let url = self
+            .queue
+            .remove(queue_index)
+            .expect("this index should still exist since we just got it from iterating the queue");
         self.start_crawling(url.clone());
         Some(url)
     }
