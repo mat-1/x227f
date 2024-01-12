@@ -19,12 +19,8 @@ use crate::data::Page;
 
 pub const USER_AGENT: &str =
     "Mozilla/5.0 (88x31 crawler by mat@matdoes.dev +https://github.com/mat-1/x227f)";
-/// How many pages we're crawling at once.
-///
-/// You can set this to higher numbers like 100 and it'll work fine, but right
-/// now I have it set to a low number to avoid hitting Neocities and
-/// archive.org's ratelimits.
-pub const CONCURRENT_CRAWLER_COUNT: usize = 20;
+/// The maximum number of pages that we can be crawling at the same time.
+pub const CONCURRENT_CRAWLER_COUNT: usize = 100;
 /// How often we should recheck pages in the database.
 pub const RECRAWL_PAGES_INTERVAL_HOURS: u64 = 24 * 7;
 /// How long buttons should be cached for. We won't explicitly go out and
@@ -191,8 +187,29 @@ async fn crawl_task(ctx: scrape::ScrapeContext, crawl_data: Arc<Mutex<CrawlData>
 
             match scrape_page_res {
                 Ok(Some(page)) => {
-                    // if it's low priority then we'll only save it if it had buttons
-                    if is_normal_priority || !page.buttons.is_empty() {
+                    // if it's low priority then we'll only save it if it had new buttons
+                    let new_buttons_count = {
+                        let mut new_buttons_count = 0;
+
+                        if !page.buttons.is_empty() {
+                            let crawl_data = crawl_data.lock();
+                            let page_url_host = page.url.host_str().unwrap_or_default();
+                            if let Some(button_sources) =
+                                crawl_data.button_sources_by_domain.get(page_url_host)
+                            {
+                                for potentially_new_button in &page.buttons {
+                                    if let Some(source) = &potentially_new_button.source {
+                                        if !button_sources.contains(source) {
+                                            new_buttons_count += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        new_buttons_count
+                    };
+                    if is_normal_priority || new_buttons_count > 0 {
                         // add the page to crawl_data
                         let mut crawl_data = crawl_data.lock();
                         crawl_data.insert_page(page.clone());
@@ -210,15 +227,15 @@ async fn crawl_task(ctx: scrape::ScrapeContext, crawl_data: Arc<Mutex<CrawlData>
                                     }
                                 }
                             }
-                        }
-                        for url in page.other_internal_links {
-                            let url_page_id = PageId::from(url.clone());
-                            if !crawl_data.is_page_id_known(&url_page_id) {
-                                crawl_data.add_to_low_priority_queue(url.clone());
+                            for url in page.other_internal_links {
+                                let url_page_id = PageId::from(url.clone());
+                                if !crawl_data.is_page_id_known(&url_page_id) {
+                                    crawl_data.add_to_low_priority_queue(url.clone());
+                                }
                             }
                         }
                     } else {
-                        debug!("not adding {original_url} to database since it's low priority and has no buttons");
+                        debug!("not adding {original_url} to database since it's low priority and has no new buttons");
                     }
                 }
                 Ok(None) => {

@@ -30,12 +30,14 @@ pub struct PageId {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct CrawlData {
     crawling_pages: Vec<Url>,
+    #[serde(default)]
     low_priority_crawling_pages: Vec<Url>,
     /// Queue for pages that were linked as buttons. We may crawl non-button
     /// links from these and put them in the low-priority queue.
     queue: VecDeque<Url>,
     /// Queue for pages that weren't linked as buttons. We won't crawl
     /// non-button links from these.
+    #[serde(default)]
     low_priority_queue: VecDeque<Url>,
     pages: HashMap<PageId, Page>,
 
@@ -57,6 +59,11 @@ pub struct CrawlData {
     #[serde(default)]
     #[serde(skip)]
     pub button_cache: Arc<RwLock<HashMap<Url, CachedButton>>>,
+
+    /// This is used for anti-spam.
+    #[serde(default)]
+    #[serde(skip)]
+    pub button_sources_by_domain: HashMap<String, HashSet<Url>>,
 }
 
 impl PartialEq for CrawlData {
@@ -290,6 +297,8 @@ impl CrawlData {
             self.pages.remove(&new_redirect.from);
         }
 
+        let source_host = page.url.host_str().unwrap_or_default().to_string();
+
         // add buttons to cache
         let mut button_cache = self.button_cache.write();
         for button in &page.buttons {
@@ -302,6 +311,10 @@ impl CrawlData {
                         last_visited: button.last_visited,
                     },
                 );
+                self.button_sources_by_domain
+                    .entry(source_host.clone())
+                    .or_default()
+                    .insert(source.clone());
             }
         }
         drop(button_cache);
