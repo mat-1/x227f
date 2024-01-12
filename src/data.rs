@@ -30,7 +30,13 @@ pub struct PageId {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct CrawlData {
     crawling_pages: Vec<Url>,
+    low_priority_crawling_pages: Vec<Url>,
+    /// Queue for pages that were linked as buttons. We may crawl non-button
+    /// links from these and put them in the low-priority queue.
     queue: VecDeque<Url>,
+    /// Queue for pages that weren't linked as buttons. We won't crawl
+    /// non-button links from these.
+    low_priority_queue: VecDeque<Url>,
     pages: HashMap<PageId, Page>,
 
     #[serde(default)]
@@ -56,7 +62,9 @@ pub struct CrawlData {
 impl PartialEq for CrawlData {
     fn eq(&self, other: &Self) -> bool {
         self.crawling_pages == other.crawling_pages
+            && self.low_priority_crawling_pages == other.low_priority_crawling_pages
             && self.queue == other.queue
+            && self.low_priority_queue == other.low_priority_queue
             && self.pages == other.pages
     }
 }
@@ -99,7 +107,19 @@ impl CrawlData {
                     .insert(PageId::from(url.clone()));
             }
         }
+        for url in self.low_priority_queue.iter() {
+            if !check_hosts_list_contains_url(BANNED_HOSTS, url) {
+                self.queued_or_crawling_pages
+                    .insert(PageId::from(url.clone()));
+            }
+        }
         for url in self.crawling_pages.iter() {
+            if !check_hosts_list_contains_url(BANNED_HOSTS, url) {
+                self.queued_or_crawling_pages
+                    .insert(PageId::from(url.clone()));
+            }
+        }
+        for url in self.low_priority_crawling_pages.iter() {
             if !check_hosts_list_contains_url(BANNED_HOSTS, url) {
                 self.queued_or_crawling_pages
                     .insert(PageId::from(url.clone()));
@@ -115,6 +135,10 @@ impl CrawlData {
             self.known_page_ids.insert(page_id.clone());
             for redirect in &page.redirects {
                 self.known_page_ids.insert(redirect.from.clone());
+            }
+            for other_internal_link in &page.other_internal_links {
+                self.known_page_ids
+                    .insert(PageId::from(other_internal_link.clone()));
             }
             for button in &page.buttons {
                 if let Some(source) = &button.source {
@@ -144,6 +168,19 @@ impl CrawlData {
                 self.add_to_queue(item.clone());
             }
         }
+        // and the same for low_priority_crawling_pages
+        if !self.low_priority_crawling_pages.is_empty() {
+            let mut new_queue = VecDeque::new();
+            for url in self.low_priority_crawling_pages.drain(..) {
+                new_queue.push_back(url);
+            }
+            new_queue.extend(self.low_priority_queue.drain(..));
+            self.queued_or_crawling_pages.clear();
+
+            for item in new_queue.iter() {
+                self.add_to_low_priority_queue(item.clone());
+            }
+        }
 
         if self.queue.is_empty() && self.pages.is_empty() {
             // default page if there's no data
@@ -160,10 +197,19 @@ impl CrawlData {
         self.known_page_ids.insert(page_id);
     }
 
+    pub fn start_crawling_low_priority(&mut self, url: Url) {
+        let page_id = PageId::from(url.clone());
+        self.low_priority_queue.retain(|u| u != &url);
+        self.low_priority_crawling_pages.push(url);
+        self.queued_or_crawling_pages.insert(page_id.clone());
+        self.known_page_ids.insert(page_id);
+    }
+
     /// Remove the URL from crawling_pages and queued_or_crawling_pages.
     pub fn finish_crawling(&mut self, url: Url) {
         let page_id = PageId::from(url.clone());
         self.crawling_pages.retain(|u| u != &url);
+        self.low_priority_crawling_pages.retain(|u| u != &url);
         self.queued_or_crawling_pages.remove(&page_id);
     }
 
@@ -179,6 +225,21 @@ impl CrawlData {
         }
         trace!("adding {url} to queue");
         self.queue.push_back(url);
+        self.queued_or_crawling_pages.insert(page_id.clone());
+        self.known_page_ids.insert(page_id);
+    }
+
+    pub fn add_to_low_priority_queue(&mut self, url: Url) {
+        if check_hosts_list_contains_url(BANNED_HOSTS, &url) {
+            return;
+        }
+
+        let page_id = PageId::from(url.clone());
+        if self.queued_or_crawling_pages.contains(&page_id) {
+            return;
+        }
+        trace!("adding {url} to low priority queue");
+        self.low_priority_queue.push_back(url);
         self.queued_or_crawling_pages.insert(page_id.clone());
         self.known_page_ids.insert(page_id);
     }
@@ -247,6 +308,7 @@ impl CrawlData {
 
         if let Some(existing_page) = self.pages.get_mut(&page_id) {
             existing_page.buttons = page.buttons;
+            existing_page.other_internal_links = page.other_internal_links;
             existing_page.last_visited = page.last_visited;
             existing_page.failed = page.failed;
 
@@ -278,29 +340,14 @@ impl CrawlData {
     }
 
     pub fn pop_and_start_crawling(&mut self) -> Option<Url> {
-        if self.queue.is_empty() {
-            return None;
-        }
-
-        let mut queue_index = None;
-        for (i, url) in self.queue.iter().enumerate() {
-            // get the first url that's not being ratelimited
-            if self
-                .ratelimiter
-                .try_request(url.host_str().unwrap_or_default())
-            {
-                queue_index = Some(i);
-                break;
-            }
-        }
-
-        let queue_index = queue_index?;
-
-        let url = self
-            .queue
-            .remove(queue_index)
-            .expect("this index should still exist since we just got it from iterating the queue");
+        let url = pop_from_given_queue(&mut self.queue, &mut self.ratelimiter)?;
         self.start_crawling(url.clone());
+        Some(url)
+    }
+
+    pub fn pop_and_start_crawling_low_priority(&mut self) -> Option<Url> {
+        let url = pop_from_given_queue(&mut self.low_priority_queue, &mut self.ratelimiter)?;
+        self.start_crawling_low_priority(url.clone());
         Some(url)
     }
 
@@ -311,6 +358,29 @@ impl CrawlData {
     pub fn is_in_queue_or_crawling(&self, page_id: &PageId) -> bool {
         self.queued_or_crawling_pages.contains(page_id)
     }
+}
+
+fn pop_from_given_queue(queue: &mut VecDeque<Url>, ratelimiter: &mut Ratelimiter) -> Option<Url> {
+    if queue.is_empty() {
+        return None;
+    }
+
+    let mut queue_index = None;
+    for (i, url) in queue.iter().enumerate() {
+        // get the first url that's not being ratelimited
+        if ratelimiter.try_request(url.host_str().unwrap_or_default()) {
+            queue_index = Some(i);
+            break;
+        }
+    }
+
+    let queue_index = queue_index?;
+
+    let url = queue
+        .remove(queue_index)
+        .expect("this index should still exist since we just got it from iterating the queue");
+
+    Some(url)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -325,6 +395,9 @@ pub struct Page {
     #[serde(skip_serializing_if = "is_zero")]
     pub failed: usize,
     pub buttons: Vec<ButtonData>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub other_internal_links: Vec<Url>,
     #[serde(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub redirects: Vec<RedirectSource>,

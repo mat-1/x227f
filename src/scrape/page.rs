@@ -31,6 +31,7 @@ pub async fn scrape_page_from_download(
             last_visited: chrono::Utc::now(),
             failed: 0,
             buttons: vec![],
+            other_internal_links: vec![],
             redirects: redirect.into_iter().collect(),
         });
     }
@@ -59,13 +60,17 @@ pub async fn scrape_page_from_download(
                 last_visited: chrono::Utc::now(),
                 failed: 0,
                 buttons: vec![],
+                other_internal_links: vec![],
                 redirects: redirect.into_iter().collect(),
             });
         }
     }
     let body = String::from_utf8_lossy(&body_bytes);
 
-    let candidate_buttons = candidate_buttons_from_html(&body, &res_url);
+    let CandidateLinks {
+        candidate_buttons,
+        other_internal_links,
+    } = candidate_links_from_html(&body, &res_url);
 
     let request_images_start = Instant::now();
     let buttons = scrape::image::scrape_images(ctx, candidate_buttons, button_cache).await;
@@ -77,6 +82,7 @@ pub async fn scrape_page_from_download(
         last_visited: chrono::Utc::now(),
         failed: 0,
         buttons,
+        other_internal_links,
         redirects: redirect.into_iter().collect(),
     })
 }
@@ -114,7 +120,12 @@ pub async fn download_page(ctx: &ScrapeContext, url: Url) -> eyre::Result<Downlo
     Ok(DownloadPageResult { res, redirect })
 }
 
-fn candidate_buttons_from_html(body: &str, res_url: &Url) -> Vec<CandidateButton> {
+pub struct CandidateLinks {
+    pub candidate_buttons: Vec<CandidateButton>,
+    pub other_internal_links: Vec<Url>,
+}
+
+fn candidate_links_from_html(body: &str, res_url: &Url) -> CandidateLinks {
     let doc = scraper::Html::parse_document(body);
 
     let img_selector = scraper::Selector::parse("img").unwrap();
@@ -183,6 +194,7 @@ fn candidate_buttons_from_html(body: &str, res_url: &Url) -> Vec<CandidateButton
 
     // now find the links for those img elements
     let mut candidate_buttons = Vec::new();
+    let mut other_internal_links = Vec::new();
     // add defaults for every button so they stay in order of the imgs
     for img in candidate_img_els.iter() {
         candidate_buttons.push(CandidateButton {
@@ -193,12 +205,33 @@ fn candidate_buttons_from_html(body: &str, res_url: &Url) -> Vec<CandidateButton
 
     // now check every anchor on the page to see if it matches one of the buttons
     for el in doc.select(&anchor_selector) {
+        let href = el.value().attr("href").unwrap_or("");
+        // validate the href before setting it
+        if !matches!(href.chars().next(), Some('/' | '.' | 'a'..='z' | 'A'..='Z')) {
+            // href must start with /, ., or a letter
+            continue;
+        }
+        let Ok(href) = res_url.join(href) else {
+            warn!("invalid href: {href}");
+            continue;
+        };
+        if !matches!(href.scheme(), "http" | "https") {
+            continue;
+        }
+        // remove any tracking params before saving it
+        let href = transform_page_url_to_clean_up(href);
+
+        if href.host_str() == res_url.host_str() && href != *res_url {
+            // this is an internal link
+            if !other_internal_links.contains(&href) {
+                other_internal_links.push(href.clone());
+            }
+        }
+
         let Some(img_el) = el.select(&img_selector).next() else {
             // no img in this anchor, skip
             continue;
         };
-
-        let href = el.value().attr("href").unwrap_or("");
 
         // get the src from the image since we're going to compare it
         let img_src = img_el.value().attr("src").unwrap_or("");
@@ -217,32 +250,26 @@ fn candidate_buttons_from_html(body: &str, res_url: &Url) -> Vec<CandidateButton
             unreachable!();
         };
 
-        // validate the href before setting it
-        if !matches!(href.chars().next(), Some('/' | '.' | 'a'..='z' | 'A'..='Z')) {
-            // href must start with /, ., or a letter
-            continue;
-        }
-        let Ok(href) = res_url.join(href) else {
-            warn!("invalid href: {href}");
-            continue;
-        };
-        if !matches!(href.scheme(), "http" | "https") {
-            continue;
-        }
-
         // if the href is the same as the image source, then it's not a page link and it
         // should be skipped
         if href == img_src {
             continue;
         }
 
-        // remove any tracking params before saving it
-        let href = transform_page_url_to_clean_up(href);
-
         button.href = Some(href);
     }
 
-    candidate_buttons
+    // only keep non-buttons in other_internal_links
+    other_internal_links.retain(|link| {
+        !candidate_buttons
+            .iter()
+            .any(|button| button.href.as_ref() == Some(link))
+    });
+
+    CandidateLinks {
+        candidate_buttons,
+        other_internal_links,
+    }
 }
 
 /// Remove tracking parameters and unnecessary things from page urls.

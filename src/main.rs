@@ -11,7 +11,7 @@ use std::{
 
 use data::{CrawlData, PageId};
 use parking_lot::Mutex;
-use tracing::{error, info, level_filters::LevelFilter};
+use tracing::{debug, error, info, level_filters::LevelFilter};
 use tracing_subscriber::{prelude::*, EnvFilter};
 use url::Url;
 
@@ -141,10 +141,18 @@ async fn main() {
 
 async fn crawl_task(ctx: scrape::ScrapeContext, crawl_data: Arc<Mutex<CrawlData>>) {
     loop {
-        while let Some(url) = {
+        while let Some((url, is_normal_priority)) = {
             // this is necessary since otherwise crawl_data stays locked
-            let url = crawl_data.lock().pop_and_start_crawling().clone();
-            url
+            {
+                let mut crawl_data = crawl_data.lock();
+                if let Some(url) = crawl_data.pop_and_start_crawling().clone() {
+                    Some((url, true))
+                } else if let Some(url) = crawl_data.pop_and_start_crawling_low_priority().clone() {
+                    Some((url, false))
+                } else {
+                    None
+                }
+            }
         } {
             let mut already_scraping_pages_clone =
                 crawl_data.lock().queued_or_crawling_pages.clone();
@@ -183,41 +191,61 @@ async fn crawl_task(ctx: scrape::ScrapeContext, crawl_data: Arc<Mutex<CrawlData>
 
             match scrape_page_res {
                 Ok(Some(page)) => {
-                    // add the page to crawl_data
-                    let mut crawl_data = crawl_data.lock();
-                    crawl_data.insert_page(page.clone());
-                    let do_not_follow_links =
-                        check_hosts_list_contains_url(DO_NOT_FOLLOW_LINKS_FROM_HOSTS, &page.url);
-                    if !do_not_follow_links {
-                        for button in page.buttons {
-                            // add button targets to queue if they're previously unseen pages
-                            if let Some(target) = button.target {
-                                let target_page_id = PageId::from(target.clone());
-                                if !crawl_data.is_page_id_known(&target_page_id) {
-                                    crawl_data.add_to_queue(target.clone());
+                    // if it's low priority then we'll only save it if it had buttons
+                    if is_normal_priority || !page.buttons.is_empty() {
+                        // add the page to crawl_data
+                        let mut crawl_data = crawl_data.lock();
+                        crawl_data.insert_page(page.clone());
+                        let do_not_follow_links = check_hosts_list_contains_url(
+                            DO_NOT_FOLLOW_LINKS_FROM_HOSTS,
+                            &page.url,
+                        );
+                        if !do_not_follow_links {
+                            for button in page.buttons {
+                                // add button targets to queue if they're previously unseen pages
+                                if let Some(target) = button.target {
+                                    let target_page_id = PageId::from(target.clone());
+                                    if !crawl_data.is_page_id_known(&target_page_id) {
+                                        crawl_data.add_to_queue(target.clone());
+                                    }
                                 }
                             }
                         }
+                        for url in page.other_internal_links {
+                            let url_page_id = PageId::from(url.clone());
+                            if !crawl_data.is_page_id_known(&url_page_id) {
+                                crawl_data.add_to_low_priority_queue(url.clone());
+                            }
+                        }
+                    } else {
+                        debug!("not adding {original_url} to database since it's low priority and has no buttons");
                     }
                 }
                 Ok(None) => {
                     // none means that we got redirected to somewhere that's
                     // already being crawled, so nothing to do
+                    debug!(
+                        "not adding {original_url} to database since we got redirected to a page that's already being crawled"
+                    );
                 }
                 Err(e) => {
                     error!("error scraping page {original_url}: {e}");
-                    let mut crawl_data = crawl_data.lock();
-                    if let Some(existing_page) = crawl_data.get_page_mut(&original_url_page_id) {
-                        existing_page.last_visited = chrono::Utc::now();
-                        existing_page.failed += 1;
-                    } else {
-                        crawl_data.insert_page(Page {
-                            url: original_url.clone(),
-                            last_visited: chrono::Utc::now(),
-                            failed: 1,
-                            buttons: vec![],
-                            redirects: vec![],
-                        });
+                    if is_normal_priority {
+                        let mut crawl_data = crawl_data.lock();
+                        if let Some(existing_page) = crawl_data.get_page_mut(&original_url_page_id)
+                        {
+                            existing_page.last_visited = chrono::Utc::now();
+                            existing_page.failed += 1;
+                        } else {
+                            crawl_data.insert_page(Page {
+                                url: original_url.clone(),
+                                last_visited: chrono::Utc::now(),
+                                failed: 1,
+                                buttons: vec![],
+                                other_internal_links: vec![],
+                                redirects: vec![],
+                            });
+                        }
                     }
                 }
             };
