@@ -191,8 +191,6 @@ fn re_encode_image(bytes: Vec<u8>, format: image::ImageFormat) -> eyre::Result<V
                 &bytes,
                 &oxipng::Options {
                     strip: oxipng::StripChunks::Safe,
-                    force: true,
-                    fix_errors: true,
                     ..Default::default()
                 },
             )
@@ -340,6 +338,7 @@ async fn download_88x31_image(ctx: &ScrapeContext, url: Url) -> eyre::Result<Dow
             // exists to reduce the chances of this happening but it still could.
             if let Some(is_88x31) = validate_image_size(&bytes, format.unwrap()) {
                 if !is_88x31 {
+                    trace!("image was not 88x31, aborting");
                     return Ok(DownloadImageResult {
                         bytes: vec![],
                         format: None,
@@ -355,6 +354,7 @@ async fn download_88x31_image(ctx: &ScrapeContext, url: Url) -> eyre::Result<Dow
 
     if format.is_none() {
         format = Some(image::guess_format(&bytes)?);
+        trace!("guessed image format: {format:?}", format = format.unwrap());
     }
 
     Ok(DownloadImageResult {

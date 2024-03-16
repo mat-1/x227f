@@ -4,6 +4,7 @@ use std::{
     time::Instant,
 };
 
+use compact_str::{CompactString, ToCompactString};
 use eyre::{bail, eyre};
 use futures_util::StreamExt;
 use parking_lot::RwLock;
@@ -31,7 +32,7 @@ pub async fn scrape_page_from_download(
             last_visited: chrono::Utc::now(),
             failed: 0,
             buttons: vec![],
-            other_internal_links: vec![],
+            other_internal_links: HashSet::default(),
             redirects: redirect.into_iter().collect(),
         });
     }
@@ -60,7 +61,7 @@ pub async fn scrape_page_from_download(
                 last_visited: chrono::Utc::now(),
                 failed: 0,
                 buttons: vec![],
-                other_internal_links: vec![],
+                other_internal_links: HashSet::default(),
                 redirects: redirect.into_iter().collect(),
             });
         }
@@ -122,7 +123,7 @@ pub async fn download_page(ctx: &ScrapeContext, url: Url) -> eyre::Result<Downlo
 
 pub struct CandidateLinks {
     pub candidate_buttons: Vec<CandidateButton>,
-    pub other_internal_links: Vec<Url>,
+    pub other_internal_links: HashSet<Url>,
 }
 
 fn candidate_links_from_html(body: &str, res_url: &Url) -> CandidateLinks {
@@ -148,12 +149,12 @@ fn candidate_links_from_html(body: &str, res_url: &Url) -> CandidateLinks {
         let alt = el
             .value()
             .attr("alt")
-            .map(|s| s.to_owned())
+            .map(|s| s.to_compact_string())
             .filter(|s| !s.is_empty());
         let title = el
             .value()
             .attr("title")
-            .map(|s| s.to_owned())
+            .map(|s| s.to_compact_string())
             .filter(|s| !s.is_empty());
 
         // validate the width and height if present
@@ -194,7 +195,7 @@ fn candidate_links_from_html(body: &str, res_url: &Url) -> CandidateLinks {
 
     // now find the links for those img elements
     let mut candidate_buttons = Vec::new();
-    let mut other_internal_links = Vec::new();
+    let mut other_internal_links = HashSet::new();
     // add defaults for every button so they stay in order of the imgs
     for img in candidate_img_els.iter() {
         candidate_buttons.push(CandidateButton {
@@ -223,9 +224,7 @@ fn candidate_links_from_html(body: &str, res_url: &Url) -> CandidateLinks {
 
         if href.host_str() == res_url.host_str() && href != *res_url {
             // this is an internal link
-            if !other_internal_links.contains(&href) {
-                other_internal_links.push(href.clone());
-            }
+            other_internal_links.insert(href.clone());
         }
 
         let Some(img_el) = el.select(&img_selector).next() else {
@@ -323,8 +322,8 @@ fn transform_page_url_to_clean_up(mut url: Url) -> Url {
 #[derive(Clone, Debug)]
 pub struct ButtonImgElement {
     pub url: Url,
-    pub alt: Option<String>,
-    pub title: Option<String>,
+    pub alt: Option<CompactString>,
+    pub title: Option<CompactString>,
 }
 
 #[derive(Clone, Debug)]

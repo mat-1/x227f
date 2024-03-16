@@ -5,6 +5,7 @@ pub mod ratelimiter;
 pub mod scrape;
 
 use std::{
+    collections::HashSet,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -37,7 +38,7 @@ pub const KNOWN_TRACKING_PARAMS: &[&str] = &["ref"];
 pub const DO_NOT_FOLLOW_LINKS_FROM_HOSTS: &[&str] = &["web.archive.org"];
 /// Hosts that shouldn't be scraped or indexed. Adding a host to this will
 /// retroactively remove it from the database.
-pub const BANNED_HOSTS: &[&str] = &[];
+pub const BANNED_HOSTS: &[&str] = &["prlog.ru"];
 
 #[tokio::main]
 async fn main() {
@@ -210,6 +211,10 @@ async fn crawl_task(ctx: scrape::ScrapeContext, crawl_data: Arc<Mutex<CrawlData>
                         new_buttons_count
                     };
                     if is_normal_priority || new_buttons_count > 0 {
+                        debug!(
+                            "adding {original_url} to database, which has {} buttons ({new_buttons_count} new)",
+                            page.buttons.len()
+                        );
                         // add the page to crawl_data
                         let mut crawl_data = crawl_data.lock();
                         crawl_data.insert_page(page.clone());
@@ -259,7 +264,7 @@ async fn crawl_task(ctx: scrape::ScrapeContext, crawl_data: Arc<Mutex<CrawlData>
                                 last_visited: chrono::Utc::now(),
                                 failed: 1,
                                 buttons: vec![],
-                                other_internal_links: vec![],
+                                other_internal_links: HashSet::default(),
                                 redirects: vec![],
                             });
                         }
@@ -279,6 +284,10 @@ async fn crawl_task(ctx: scrape::ScrapeContext, crawl_data: Arc<Mutex<CrawlData>
 
 pub fn check_hosts_list_contains_url(hosts_list: &[&str], url: &Url) -> bool {
     let page_domain = url.domain().unwrap_or_default();
+    check_hosts_list_contains_host(hosts_list, page_domain)
+}
+
+pub fn check_hosts_list_contains_host(hosts_list: &[&str], page_domain: &str) -> bool {
     hosts_list
         .iter()
         .any(|&domain| page_domain == domain || page_domain.ends_with(&format!(".{domain}")))

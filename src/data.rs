@@ -5,6 +5,7 @@ use std::{
     sync::Arc,
 };
 
+use compact_str::{format_compact, CompactString, ToCompactString};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_with::{DeserializeFromStr, SerializeDisplay};
@@ -12,8 +13,7 @@ use tracing::{error, trace};
 use url::Url;
 
 use crate::{
-    check_hosts_list_contains_url, ratelimiter::Ratelimiter, BANNED_HOSTS,
-    RECRAWL_PAGES_INTERVAL_HOURS,
+    check_hosts_list_contains_host, check_hosts_list_contains_url, ratelimiter::Ratelimiter, BANNED_HOSTS, RECRAWL_PAGES_INTERVAL_HOURS
 };
 
 /// Something that uniquely identifies a page. You can convert a URL to this,
@@ -22,19 +22,23 @@ use crate::{
     Clone, Debug, PartialEq, Eq, Hash, SerializeDisplay, DeserializeFromStr, PartialOrd, Ord,
 )]
 pub struct PageId {
-    pub host: String,
+    pub host: CompactString,
     /// The path of the page, without the leading slash.
-    pub path: String,
+    pub path: CompactString,
 }
+
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct CrawlData {
     crawling_pages: Vec<Url>,
+    
     #[serde(default)]
     low_priority_crawling_pages: Vec<Url>,
+    
     /// Queue for pages that were linked as buttons. We may crawl non-button
     /// links from these and put them in the low-priority queue.
     queue: VecDeque<Url>,
+    
     /// Queue for pages that weren't linked as buttons. We won't crawl
     /// non-button links from these.
     #[serde(default)]
@@ -49,11 +53,13 @@ pub struct CrawlData {
     #[serde(default)]
     #[serde(skip)]
     pub queued_or_crawling_pages: HashSet<PageId>,
-    #[serde(default)]
-    #[serde(skip)]
+
     /// All the page ids that we've either crawled, are crawling, or have been
     /// redirected from before. We use this to avoid unnecessarily requeue
+    #[serde(default)]
+    #[serde(skip)]
     pub known_page_ids: HashSet<PageId>,
+
     /// A cache of urls to button hashes. This is only used when a button is
     /// failed to be requested.
     #[serde(default)]
@@ -63,7 +69,7 @@ pub struct CrawlData {
     /// This is used for anti-spam.
     #[serde(default)]
     #[serde(skip)]
-    pub button_sources_by_domain: HashMap<String, HashSet<Url>>,
+    pub button_sources_by_domain: HashMap<CompactString, HashSet<Url>>,
 }
 
 impl PartialEq for CrawlData {
@@ -108,6 +114,10 @@ pub async fn load_crawl_data() -> CrawlData {
 
 impl CrawlData {
     fn init(&mut self) {
+        // remove banned hosts
+        self.low_priority_queue = self.low_priority_queue.drain(..).filter(|url| !check_hosts_list_contains_url(BANNED_HOSTS, url)).collect();
+        self.pages = self.pages.drain().filter(|(page_id, _page)| !check_hosts_list_contains_host(BANNED_HOSTS, &page_id.host)).collect();
+
         for url in self.queue.iter() {
             if !check_hosts_list_contains_url(BANNED_HOSTS, url) {
                 self.queued_or_crawling_pages
@@ -297,7 +307,7 @@ impl CrawlData {
             self.pages.remove(&new_redirect.from);
         }
 
-        let source_host = page.url.host_str().unwrap_or_default().to_string();
+        let source_host = page.url.host_str().unwrap_or_default().to_compact_string();
 
         // add buttons to cache
         let mut button_cache = self.button_cache.write();
@@ -409,8 +419,8 @@ pub struct Page {
     pub failed: usize,
     pub buttons: Vec<ButtonData>,
     #[serde(default)]
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub other_internal_links: Vec<Url>,
+    #[serde(skip_serializing_if = "HashSet::is_empty")]
+    pub other_internal_links: HashSet<Url>,
     #[serde(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub redirects: Vec<RedirectSource>,
@@ -443,19 +453,19 @@ pub struct ButtonData {
     pub redirect: Option<RedirectSource>,
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub alt: Option<String>,
+    pub alt: Option<CompactString>,
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
+    pub title: Option<CompactString>,
 }
 
 impl ButtonData {
-    pub fn source_filename(&self) -> Option<String> {
+    pub fn source_filename(&self) -> Option<CompactString> {
         if let Some(source) = &self.source {
             let path = source.path().trim_end_matches('/');
             let filename = path.split('/').last().unwrap_or_default();
             let filename = filename.split('.').next().unwrap_or_default();
-            Some(filename.to_string())
+            Some(filename.to_compact_string())
         } else {
             None
         }
@@ -468,7 +478,7 @@ impl fmt::Display for PageId {
         let path_with_leading_slash_if_necessary = if self.path.is_empty() {
             self.path.clone()
         } else {
-            format!("/{}", self.path)
+            format_compact!("/{}", self.path)
         };
         write!(f, "{}{path_with_leading_slash_if_necessary}", self.host)
     }
@@ -480,8 +490,8 @@ impl FromStr for PageId {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let (host, path) = s.trim_end_matches('/').split_once('/').unwrap_or((s, ""));
         Ok(Self {
-            host: host.to_string(),
-            path: path.to_string(),
+            host: host.to_compact_string(),
+            path: path.to_compact_string(),
         })
     }
 }
@@ -493,13 +503,13 @@ impl From<Url> for PageId {
             ""
         });
         let host = host.trim_start_matches("www.");
-        let host = host.to_string();
+        let host = host.to_compact_string();
 
         let path = url.path().to_string();
         let path = path.trim_start_matches('/');
         let path = path.trim_end_matches("/index.html");
         let path = path.trim_end_matches('/');
-        let path = path.to_string();
+        let path = path.to_compact_string();
 
         Self { host, path }
     }

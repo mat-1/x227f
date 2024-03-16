@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
+use compact_str::CompactString;
 use serde::Serialize;
 
 use crate::data::{CrawlData, PageId};
@@ -14,7 +15,7 @@ pub struct ProcessedData {
     /// A sorted vec of button hashes
     pub buttons: Vec<String>,
     /// A sorted vec of titles and alt texts used for buttons
-    pub texts: Vec<String>,
+    pub texts: Vec<CompactString>,
 
     /// Same length as `buttons`
     pub button_file_exts: Vec<String>,
