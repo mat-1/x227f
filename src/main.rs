@@ -144,10 +144,11 @@ async fn crawl_task(ctx: scrape::ScrapeContext, crawl_data: Arc<Mutex<CrawlData>
                 let mut crawl_data = crawl_data.lock();
                 if let Some(url) = crawl_data.pop_and_start_crawling().clone() {
                     Some((url, true))
-                } else if let Some(url) = crawl_data.pop_and_start_crawling_low_priority().clone() {
-                    Some((url, false))
                 } else {
-                    None
+                    crawl_data
+                        .pop_and_start_crawling_low_priority()
+                        .clone()
+                        .map(|url| (url, false))
                 }
             }
         } {

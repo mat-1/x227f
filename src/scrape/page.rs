@@ -5,7 +5,7 @@ use std::{
 };
 
 use compact_str::{CompactString, ToCompactString};
-use eyre::{bail, eyre};
+use eyre::bail;
 use futures_util::StreamExt;
 use parking_lot::RwLock;
 use tracing::{debug, instrument, warn};
@@ -41,10 +41,14 @@ pub async fn scrape_page_from_download(
 
     // validate headers
     let res_headers = res.headers();
-    let content_type = res_headers
-        .get(reqwest::header::CONTENT_TYPE)
-        .ok_or_else(|| eyre!("missing content-type header"))?
-        .to_str()?;
+    let content_type = match res_headers.get(reqwest::header::CONTENT_TYPE) {
+        Some(content_type) => content_type.to_str()?,
+        None => {
+            warn!("missing content-type header, defaulting to text/html");
+            "text/html"
+        }
+    };
+
     if !content_type.starts_with("text/html") {
         bail!("skipping non-html page: {content_type}");
     }
@@ -219,6 +223,11 @@ fn candidate_links_from_html(body: &str, res_url: &Url) -> CandidateLinks {
         if !matches!(href.scheme(), "http" | "https") {
             continue;
         }
+        if href.to_string().len() > 256 {
+            // normal urls shouldn't be this long, this probably means something went wrong
+            continue;
+        }
+
         // remove any tracking params before saving it
         let href = transform_page_url_to_clean_up(href);
 

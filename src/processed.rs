@@ -126,7 +126,7 @@ pub fn process_crawl_data(crawl_data: &CrawlData) -> ProcessedData {
                 let target_page_id = redirects.get(&target_page_id).unwrap_or(&target_page_id);
 
                 let link_index = pages
-                    .binary_search(&target_page_id)
+                    .binary_search(target_page_id)
                     .expect("link should be in pages");
                 links[page_id_index].push(Some(link_index));
                 backlinks[link_index].push(page_id_index);
@@ -186,6 +186,11 @@ pub fn process_crawl_data(crawl_data: &CrawlData) -> ProcessedData {
     }
 }
 
+#[derive(Serialize)]
+pub struct CrawlStats {
+    buttons: usize,
+}
+
 pub async fn save_processed_crawl_data(crawl_data: &CrawlData) -> eyre::Result<()> {
     let processed_data = process_crawl_data(crawl_data);
     let json = serde_json::to_string(&processed_data)?;
@@ -195,6 +200,12 @@ pub async fn save_processed_crawl_data(crawl_data: &CrawlData) -> eyre::Result<(
     let cbor = serde_cbor::to_vec(&processed_data)?;
     tokio::fs::write("88x31.cbor.bak", cbor).await?;
     tokio::fs::rename("88x31.cbor.bak", "88x31.cbor").await?;
+
+    let stats = CrawlStats {
+        buttons: processed_data.buttons.len(),
+    };
+    let stats_json = serde_json::to_string(&stats)?;
+    tokio::fs::write("stats.json", stats_json).await?;
 
     Ok(())
 }

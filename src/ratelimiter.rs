@@ -54,7 +54,7 @@ pub fn crawl_delay_for_host(host: &str) -> CrawlDelayResponse {
 }
 
 pub fn shorten_host(host: &str) -> Option<String> {
-    let parts = host.split(".").collect::<Vec<&str>>();
+    let parts = host.split('.').collect::<Vec<&str>>();
     if parts.len() > 2 {
         return Some(parts[1..].join("."));
     }
