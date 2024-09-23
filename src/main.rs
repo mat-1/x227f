@@ -35,10 +35,17 @@ pub const RECRAWL_BUTTONS_INTERVAL_HOURS: u64 = 24 * 7;
 pub const KNOWN_TRACKING_PARAMS: &[&str] = &["ref"];
 /// Pages that we can scrape but shouldn't follow links from. This will also
 /// include all subdomains.
-pub const DO_NOT_FOLLOW_LINKS_FROM_HOSTS: &[&str] = &["web.archive.org"];
+pub const DO_NOT_FOLLOW_LINKS_FROM_HOSTS: &[&str] =
+    &["web.archive.org", "crimsongale.com", "paddyk45.de"];
 /// Hosts that shouldn't be scraped or indexed. Adding a host to this will
 /// retroactively remove it from the database.
-pub const BANNED_HOSTS: &[&str] = &["prlog.ru"];
+pub const BANNED_HOSTS: &[&str] = &[
+    "prlog.ru",
+    "strawberryfoundations.xyz", // crawler abuse
+    "paddyk45.duckdns.org", // crawler abuse
+    "dvd-rank.com", // nsfw
+    "adult-plus.com" // nsfw
+];
 
 #[tokio::main]
 async fn main() {

@@ -13,7 +13,8 @@ use tracing::{error, trace};
 use url::Url;
 
 use crate::{
-    check_hosts_list_contains_host, check_hosts_list_contains_url, ratelimiter::Ratelimiter, BANNED_HOSTS, RECRAWL_PAGES_INTERVAL_HOURS
+    check_hosts_list_contains_host, check_hosts_list_contains_url, ratelimiter::Ratelimiter,
+    BANNED_HOSTS, RECRAWL_PAGES_INTERVAL_HOURS,
 };
 
 /// Something that uniquely identifies a page. You can convert a URL to this,
@@ -27,18 +28,17 @@ pub struct PageId {
     pub path: CompactString,
 }
 
-
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct CrawlData {
     crawling_pages: Vec<Url>,
-    
+
     #[serde(default)]
     low_priority_crawling_pages: Vec<Url>,
-    
+
     /// Queue for pages that were linked as buttons. We may crawl non-button
     /// links from these and put them in the low-priority queue.
     queue: VecDeque<Url>,
-    
+
     /// Queue for pages that weren't linked as buttons. We won't crawl
     /// non-button links from these.
     #[serde(default)]
@@ -115,8 +115,16 @@ pub async fn load_crawl_data() -> CrawlData {
 impl CrawlData {
     fn init(&mut self) {
         // remove banned hosts
-        self.low_priority_queue = self.low_priority_queue.drain(..).filter(|url| !check_hosts_list_contains_url(BANNED_HOSTS, url)).collect();
-        self.pages = self.pages.drain().filter(|(page_id, _page)| !check_hosts_list_contains_host(BANNED_HOSTS, &page_id.host)).collect();
+        self.low_priority_queue = self
+            .low_priority_queue
+            .drain(..)
+            .filter(|url| !check_hosts_list_contains_url(BANNED_HOSTS, url))
+            .collect();
+        self.pages = self
+            .pages
+            .drain()
+            .filter(|(page_id, _page)| !check_hosts_list_contains_host(BANNED_HOSTS, &page_id.host))
+            .collect();
 
         for url in self.queue.iter() {
             if !check_hosts_list_contains_url(BANNED_HOSTS, url) {
