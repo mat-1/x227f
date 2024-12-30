@@ -36,9 +36,8 @@ pub fn delete_unlinked_buttons(crawl_data: &CrawlData) {
         );
 
         for filename in deleting_button_filenames {
-            println!("{filename}");
-            // std::fs::remove_file(format!("data/buttons/{filename}")).
-            // unwrap();
+            println!("Deleting {filename}");
+            std::fs::remove_file(format!("data/buttons/{filename}")).unwrap();
         }
     }
 }

@@ -23,7 +23,7 @@ pub const USER_AGENT: &str =
 /// The maximum number of pages that we can be crawling at the same time.
 pub const CONCURRENT_CRAWLER_COUNT: usize = 100;
 /// How often we should recheck pages in the database.
-pub const RECRAWL_PAGES_INTERVAL_HOURS: u64 = 24 * 7;
+pub const RECRAWL_PAGES_INTERVAL_HOURS: u64 = 24;
 /// How long buttons should be cached for. We won't explicitly go out and
 /// download them when this time expires, but we will download them again next
 /// time there's a page with them.
@@ -35,16 +35,21 @@ pub const RECRAWL_BUTTONS_INTERVAL_HOURS: u64 = 24 * 7;
 pub const KNOWN_TRACKING_PARAMS: &[&str] = &["ref"];
 /// Pages that we can scrape but shouldn't follow links from. This will also
 /// include all subdomains.
-pub const DO_NOT_FOLLOW_LINKS_FROM_HOSTS: &[&str] =
-    &["web.archive.org", "crimsongale.com", "paddyk45.de"];
+pub const DO_NOT_FOLLOW_LINKS_FROM_HOSTS: &[&str] = &[
+    "web.archive.org",   // duplicates content
+    "crimsongale.com",   // crawler abuse
+    "paddyk45.de",       // crawler abuse
+    "phoenix-search.jp", // too many pages
+    "ranking.prb.jp",    // too many pages
+];
 /// Hosts that shouldn't be scraped or indexed. Adding a host to this will
 /// retroactively remove it from the database.
 pub const BANNED_HOSTS: &[&str] = &[
     "prlog.ru",
     "strawberryfoundations.xyz", // crawler abuse
-    "paddyk45.duckdns.org", // crawler abuse
-    "dvd-rank.com", // nsfw
-    "adult-plus.com" // nsfw
+    "paddyk45.duckdns.org",      // crawler abuse
+    "dvd-rank.com",              // nsfw
+    "adult-plus.com",            // nsfw
 ];
 
 #[tokio::main]

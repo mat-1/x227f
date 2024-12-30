@@ -1,4 +1,4 @@
-use std::{collections::HashMap, io::Cursor, sync::Arc, time::Instant};
+use std::{collections::HashMap, io::Cursor, num::NonZeroU8, sync::Arc, time::Instant};
 
 use base64::Engine;
 use eyre::{bail, eyre};
@@ -190,7 +190,14 @@ fn re_encode_image(bytes: Vec<u8>, format: image::ImageFormat) -> eyre::Result<V
             let bytes = oxipng::optimize_from_memory(
                 &bytes,
                 &oxipng::Options {
-                    strip: oxipng::StripChunks::Safe,
+                    strip: oxipng::StripChunks::Strip([*b"sRGB", *b"pHYs"].into()),
+                    optimize_alpha: true,
+                    force: true,
+                    deflate: oxipng::Deflaters::Zopfli {
+                        iterations: NonZeroU8::new(15).unwrap(),
+                    },
+
+                    // preset -o 2
                     ..Default::default()
                 },
             )
