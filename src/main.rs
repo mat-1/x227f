@@ -5,11 +5,12 @@ pub mod ratelimiter;
 pub mod scrape;
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     sync::Arc,
     time::{Duration, Instant},
 };
 
+use compact_str::CompactString;
 use data::{CrawlData, PageId};
 use parking_lot::Mutex;
 use tracing::{debug, error, info, level_filters::LevelFilter};
@@ -52,6 +53,9 @@ pub const BANNED_HOSTS: &[&str] = &[
     "adult-plus.com",            // nsfw
 ];
 
+/// Re-encode every 88x31 and exit instead of actually crawling.
+pub const FIX_IMAGES_MODE: bool = false;
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::registry()
@@ -80,6 +84,11 @@ async fn main() {
 
     // make data/ and data/buttons/
     tokio::fs::create_dir_all("data/buttons").await.unwrap();
+
+    if FIX_IMAGES_MODE {
+        do_fix_images_mode().await;
+        return;
+    }
 
     let initial_crawl_data = data::load_crawl_data().await;
 
@@ -201,21 +210,26 @@ async fn crawl_task(ctx: scrape::ScrapeContext, crawl_data: Arc<Mutex<CrawlData>
 
             match scrape_page_res {
                 Ok(Some(page)) => {
-                    // if it's low priority then we'll only save it if it had new buttons
+                    // if it's low priority then we'll only save it if it has buttons that aren't
+                    // used anywhere else on the same domain
                     let new_buttons_count = {
                         let mut new_buttons_count = 0;
 
                         if !page.buttons.is_empty() {
                             let crawl_data = crawl_data.lock();
                             let page_url_host = page.url.host_str().unwrap_or_default();
-                            if let Some(button_sources) =
-                                crawl_data.button_sources_by_domain.get(page_url_host)
-                            {
-                                for potentially_new_button in &page.buttons {
-                                    if let Some(source) = &potentially_new_button.source {
+                            let button_sources =
+                                crawl_data.button_sources_by_domain.get(page_url_host);
+                            for potentially_new_button in &page.buttons {
+                                if let Some(source) = &potentially_new_button.source {
+                                    if let Some(button_sources) = button_sources {
                                         if !button_sources.contains(source) {
                                             new_buttons_count += 1;
                                         }
+                                    } else {
+                                        // we didn't know about any buttons on the domain so this
+                                        // button must be new
+                                        new_buttons_count += 1;
                                     }
                                 }
                             }
@@ -326,4 +340,213 @@ fn init_deadlock_detection() {
             }
         }
     });
+}
+
+async fn do_fix_images_mode() {
+    let mut crawl_data = data::load_crawl_data().await;
+
+    // println!("Doing garbage collecting first");
+    // garbagecollect::delete_unlinked_buttons(&crawl_data);
+
+    println!("Starting!");
+
+    let mut button_hash_to_page_id: HashMap<String, Vec<PageId>> = HashMap::new();
+    let mut button_file_exts: HashMap<String, CompactString> = HashMap::new();
+    for (page_id, page) in crawl_data.pages().iter() {
+        for button in &page.buttons {
+            button_hash_to_page_id
+                .entry(button.hash.clone())
+                .or_default()
+                .push(page_id.clone());
+            button_file_exts.insert(button.hash.clone(), button.file_ext.clone().into());
+        }
+    }
+
+    let ctx = scrape::ScrapeContext::new();
+
+    let total = button_hash_to_page_id.len();
+
+    async fn re_encode_button_task(
+        button_file_exts: &Arc<HashMap<String, CompactString>>,
+        ctx: &scrape::ScrapeContext,
+        crawl_data_pages_mut: Arc<Mutex<HashMap<PageId, Page>>>,
+        old_hash: String,
+        pages: Box<[PageId]>,
+        i: usize,
+        total: usize,
+        // TODO: this was disable during development, should probably be properly implemented now
+        _to_delete: Arc<Mutex<Vec<(String, CompactString)>>>,
+    ) {
+        let file_ext = button_file_exts.get(&old_hash).unwrap();
+
+        println!("{}/{total} \t| {old_hash}.{file_ext}", i + 1);
+
+        // read data/buttons/{hash}.{file_ext}
+        let button_data = match tokio::fs::read(format!("data/buttons/{old_hash}.{file_ext}")).await
+        {
+            Ok(button_data) => button_data,
+            Err(_) => {
+                // println!("{old_hash}.{file_ext} is missing!!!");
+                // return;
+
+                println!("{old_hash}.{file_ext} is missing, downloading..");
+
+                let first_image_url = crawl_data_pages_mut
+                    .lock()
+                    .get_mut(pages.first().unwrap())
+                    .unwrap()
+                    .buttons
+                    .iter()
+                    .find(|button| button.hash == old_hash)
+                    .unwrap()
+                    .source
+                    .clone()
+                    .unwrap();
+
+                let scrape::image::DownloadImageResult { bytes, .. } =
+                    match scrape::image::download_88x31_image(&ctx, first_image_url).await {
+                        Ok(res) => res,
+                        Err(e) => {
+                            println!("couldn't download {old_hash}.{file_ext}: {e}");
+                            return;
+                        }
+                    };
+                let image_hash = scrape::image::hash_image(&bytes);
+                if image_hash != old_hash {
+                    println!(
+                        "warning: {old_hash}.{file_ext} is missing and the downloaded image has a different hash ({image_hash}), continuing anyways"
+                    );
+                    // save it twice, with different hashes
+                    tokio::fs::write(format!("data/buttons/{old_hash}.{file_ext}"), &bytes)
+                        .await
+                        .unwrap();
+                }
+                tokio::fs::write(format!("data/buttons/{image_hash}.{file_ext}"), &bytes)
+                    .await
+                    .unwrap();
+
+                bytes
+            }
+        };
+
+        let Some(format) = image::ImageFormat::from_extension(&file_ext) else {
+            println!("{old_hash}.{file_ext} skipped because we couldn't determine the format");
+            return;
+        };
+
+        let start_time = Instant::now();
+        let new_image = match scrape::image::re_encode_image(button_data, format) {
+            Ok(new_image) => new_image,
+            Err(e) => {
+                println!("couldn't re-encode {old_hash}.{file_ext}: {e}");
+                return;
+            }
+        };
+        let elapsed = start_time.elapsed();
+
+        let new_hash = scrape::image::hash_image(&new_image);
+
+        if new_hash == old_hash {
+            println!(
+                "{}/{total} \t| {old_hash}.{file_ext} is already optimized - took {elapsed:?}",
+                i + 1
+            );
+            return;
+        }
+
+        // write data/buttons/{new_hash}.{new_file_ext}
+        for attempt in 0..3 {
+            match tokio::fs::write(format!("data/buttons/{new_hash}.{file_ext}"), &new_image).await
+            {
+                Ok(_) => break,
+                Err(e) => {
+                    println!("couldn't write {new_hash}.{file_ext} (attempt {attempt}): {e}");
+                }
+            }
+        }
+        let mut crawl_data_pages_mut_lock = crawl_data_pages_mut.lock();
+        for page in pages {
+            let page = crawl_data_pages_mut_lock.get_mut(&page).unwrap();
+            for button in &mut page.buttons {
+                if button.hash == old_hash {
+                    button.hash = new_hash.clone();
+                }
+            }
+        }
+        drop(crawl_data_pages_mut_lock);
+
+        println!(
+            "{}/{total} \t| {old_hash}.{file_ext} re-encoded to {new_hash}.{file_ext} - took {elapsed:?}",
+            i + 1
+        );
+    }
+
+    let mut tasks = Vec::new();
+
+    let to_delete = Arc::new(Mutex::new(Vec::new()));
+    let crawl_data_pages_mut = Arc::new(Mutex::new(crawl_data.pages().clone()));
+    let button_file_exts = Arc::new(button_file_exts);
+
+    for (i, (old_hash, pages)) in button_hash_to_page_id.into_iter().enumerate() {
+        let button_file_exts = button_file_exts.clone();
+        let ctx = ctx.clone();
+        let crawl_data_pages_mut = crawl_data_pages_mut.clone();
+        let to_delete = to_delete.clone();
+        let pages = pages.clone().into_boxed_slice();
+        tasks.push(tokio::spawn(async move {
+            re_encode_button_task(
+                &button_file_exts,
+                &ctx,
+                crawl_data_pages_mut,
+                old_hash,
+                pages,
+                i,
+                total,
+                to_delete,
+            )
+            .await;
+        }));
+        if tasks.len() >= 100 {
+            // pop the first task that's done
+            for (i, task) in tasks.iter_mut().enumerate() {
+                if task.is_finished() {
+                    if let Err(e) = task.await {
+                        println!("task failed: {e}");
+                    }
+                    tasks.remove(i);
+                    break;
+                }
+            }
+            // if it's *still* too long, just await the first task
+            if tasks.len() >= 100 {
+                // wait for the first task to finish
+                if let Err(e) = tasks.remove(0).await {
+                    println!("task failed: {e}");
+                }
+            }
+        }
+    }
+    for task in tasks {
+        if let Err(e) = task.await {
+            println!("task failed: {e}");
+        }
+    }
+    *crawl_data.pages_mut() = crawl_data_pages_mut.lock().clone();
+
+    println!("saving new hashes...");
+    data::save_crawl_data(&crawl_data).await;
+    processed::save_processed_crawl_data(&crawl_data)
+        .await
+        .unwrap();
+
+    println!("deleting images...");
+    for (old_hash, file_ext) in to_delete.lock().drain(..) {
+        // delete the old one
+        if let Err(e) = tokio::fs::remove_file(format!("data/buttons/{old_hash}.{file_ext}")).await
+        {
+            println!("couldn't delete {old_hash}.{file_ext}: {e}");
+        }
+    }
+
+    println!("DONE");
 }

@@ -10,3 +10,7 @@
 /stats.json
 
 /upload.sh
+
+/flamegraph.svg
+/perf.data
+/perf.data.old

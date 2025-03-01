@@ -1,4 +1,4 @@
-use std::{collections::HashMap, io::Cursor, num::NonZeroU8, sync::Arc, time::Instant};
+use std::{collections::HashMap, io::Cursor, num::NonZeroU8, path::Path, sync::Arc, time::Instant};
 
 use base64::Engine;
 use eyre::{bail, eyre};
@@ -147,17 +147,12 @@ pub async fn scrape_image(
         return Ok(None);
     }
 
-    let mut hasher = Sha256::new();
-    hasher.update(&bytes);
-    let hash = hex::encode(hasher.finalize());
-    // truncate to 32 bytes because big file names are ugly
-    // pretty sure we won't get collisions anyways
-    let hash = hash[..32].to_owned();
+    let hash = hash_image(&bytes);
 
     // save to data/buttons/<sha256>.<ext>
     let file_ext = format.extensions_str()[0];
     let file_name = format!("{hash}.{file_ext}");
-    let file_path = std::path::Path::new("data/buttons").join(file_name);
+    let file_path = Path::new("data/buttons").join(file_name);
     // only write if it doesn't exist
     if !file_path.exists() {
         tokio::fs::write(file_path, bytes).await?;
@@ -179,14 +174,27 @@ pub async fn scrape_image(
     Ok(Some(button_data))
 }
 
-fn re_encode_image(bytes: Vec<u8>, format: image::ImageFormat) -> eyre::Result<Vec<u8>> {
+pub fn hash_image(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    let hash = hex::encode(hasher.finalize());
+    // truncate to 32 bytes because big file names are ugly
+    // pretty sure we won't get collisions anyways
+    hash[..32].to_owned()
+}
+
+pub fn re_encode_image(bytes: Vec<u8>, format: image::ImageFormat) -> eyre::Result<Vec<u8>> {
     let start = Instant::now();
     let bytes = match format {
         // for most we just fall back to image's normal re-encoding
         ImageFormat::Png => {
-            // for png we use oxipng because we get significantly smaller file
-            // sizes
+            // re-encode with `image` first so oxipng doesn't cheat
+            let img = image::load_from_memory_with_format(&bytes, format)?;
+            let mut bytes = Cursor::new(Vec::new());
+            img.write_to(&mut bytes, format)?;
+            let bytes = bytes.into_inner();
 
+            // now use oxipng to make it smaller
             let bytes = oxipng::optimize_from_memory(
                 &bytes,
                 &oxipng::Options {
@@ -194,7 +202,7 @@ fn re_encode_image(bytes: Vec<u8>, format: image::ImageFormat) -> eyre::Result<V
                     optimize_alpha: true,
                     force: true,
                     deflate: oxipng::Deflaters::Zopfli {
-                        iterations: NonZeroU8::new(15).unwrap(),
+                        iterations: NonZeroU8::new(5).unwrap(),
                     },
 
                     // preset -o 2
@@ -231,6 +239,10 @@ fn re_encode_image(bytes: Vec<u8>, format: image::ImageFormat) -> eyre::Result<V
 
             bytes
         }
+        ImageFormat::Jpeg | ImageFormat::WebP | ImageFormat::Avif | ImageFormat::Bmp => {
+            // can't be optimized losslessly
+            bytes
+        }
         _ => {
             let img = image::load_from_memory_with_format(&bytes, format)?;
 
@@ -247,18 +259,21 @@ fn re_encode_image(bytes: Vec<u8>, format: image::ImageFormat) -> eyre::Result<V
     Ok(bytes)
 }
 
-struct DownloadImageResult {
+pub struct DownloadImageResult {
     /// The bytes of the image. This may be empty if the image was not 88x31
     /// (but not always, you should check again just to make sure).
-    bytes: Vec<u8>,
-    format: Option<ImageFormat>,
+    pub bytes: Vec<u8>,
+    pub format: Option<ImageFormat>,
     /// The final URL of the image after following redirects. This is None if
     /// the image was linked as a data: URI.
-    url: Option<Url>,
-    redirect: Option<RedirectSource>,
+    pub url: Option<Url>,
+    pub redirect: Option<RedirectSource>,
 }
 
-async fn download_88x31_image(ctx: &ScrapeContext, url: Url) -> eyre::Result<DownloadImageResult> {
+pub async fn download_88x31_image(
+    ctx: &ScrapeContext,
+    url: Url,
+) -> eyre::Result<DownloadImageResult> {
     if url.scheme() == "data" {
         return parse_data_uri(url);
     }
@@ -484,7 +499,7 @@ fn mimetype_to_format(mimetype: &str) -> Option<image::ImageFormat> {
 /// Validates whether the headers of the image indicate that it's 88x31. This
 /// returns `None` if it can't be determined from the given bytes.
 fn validate_image_size(data: &[u8], format: image::ImageFormat) -> Option<bool> {
-    let mut reader = image::io::Reader::new(Cursor::new(data));
+    let mut reader = image::ImageReader::new(Cursor::new(data));
     reader.set_format(format);
 
     let dimensions = reader.into_dimensions().ok()?;

@@ -369,6 +369,9 @@ impl CrawlData {
     pub fn pages(&self) -> &HashMap<PageId, Page> {
         &self.pages
     }
+    pub fn pages_mut(&mut self) -> &mut HashMap<PageId, Page> {
+        &mut self.pages
+    }
 
     pub fn pop_and_start_crawling(&mut self) -> Option<Url> {
         let url = pop_from_given_queue(&mut self.queue, &mut self.ratelimiter)?;
