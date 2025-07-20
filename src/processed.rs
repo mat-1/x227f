@@ -1,12 +1,12 @@
 //! Convert the crawl.json into a smaller 88x31.{json,cbor} that's easier to do
 //! searches and calculations on.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use compact_str::CompactString;
 use serde::Serialize;
 
-use crate::data::{CrawlData, PageId};
+use crate::data::{CrawlerState, PageId};
 
 #[derive(Serialize)]
 pub struct ProcessedData {
@@ -43,7 +43,7 @@ pub struct ProcessedData {
     pub backlink_buttons: Vec<Vec<usize>>,
 }
 
-pub fn process_crawl_data(crawl_data: &CrawlData) -> ProcessedData {
+pub fn process_crawl_data(crawl_data: &CrawlerState) -> ProcessedData {
     let mut redirects = HashMap::new();
 
     let mut pages = BTreeSet::new();
@@ -51,12 +51,18 @@ pub fn process_crawl_data(crawl_data: &CrawlData) -> ProcessedData {
         pages.insert(page_id.clone());
         for link in &page.buttons {
             if let Some(target) = &link.target {
-                let target_page_id = PageId::from(target.clone());
+                let target_page_id = PageId::from(target);
                 pages.insert(target_page_id);
             }
         }
-        for redirect in &page.redirects {
-            redirects.insert(redirect.from.clone(), page_id.clone());
+        if let Some(target) = &page.redirects_to {
+            if !matches!(target.scheme(), "http" | "https") {
+                continue;
+            }
+
+            let target_page_id = PageId::from(target);
+            redirects.insert(page_id, target_page_id.clone());
+            pages.insert(target_page_id);
         }
     }
     let pages = pages.into_iter().collect::<Vec<_>>();
@@ -120,14 +126,24 @@ pub fn process_crawl_data(crawl_data: &CrawlData) -> ProcessedData {
                 .expect("button should be in buttons");
 
             if let Some(target) = &button.target {
-                let target_page_id = PageId::from(target.clone());
+                let mut target_page_id = PageId::from(target);
                 // follow redirects (this doesn't need to be a loop since they're already
                 // follows them all the way through)
-                let target_page_id = redirects.get(&target_page_id).unwrap_or(&target_page_id);
+                let mut prev_redirects = HashSet::new();
+                while let Some(new_target_page_id) = redirects.get(&target_page_id) {
+                    if prev_redirects.contains(&target_page_id)
+                        || &target_page_id == new_target_page_id
+                    {
+                        // infinite redirect!
+                        break;
+                    }
+                    target_page_id = new_target_page_id.clone();
+                    prev_redirects.insert(target_page_id.clone());
+                }
 
                 let link_index = pages
-                    .binary_search(target_page_id)
-                    .expect("link should be in pages");
+                    .binary_search(&target_page_id)
+                    .unwrap_or_else(|_| panic!("link {target_page_id} should be in pages"));
                 links[page_id_index].push(Some(link_index));
                 backlinks[link_index].push(page_id_index);
                 backlink_buttons[link_index].push(button_index);
@@ -191,7 +207,7 @@ pub struct CrawlStats {
     buttons: usize,
 }
 
-pub async fn save_processed_crawl_data(crawl_data: &CrawlData) -> eyre::Result<()> {
+pub async fn save_processed_crawl_data(crawl_data: &CrawlerState) -> eyre::Result<()> {
     let processed_data = process_crawl_data(crawl_data);
     let json = serde_json::to_string(&processed_data)?;
     tokio::fs::write("88x31.json.bak", json).await?;

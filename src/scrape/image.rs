@@ -133,7 +133,7 @@ pub async fn scrape_image(
         }
         Some(true) => {}
         None => {
-            trace!("Bytes: {bytes:?}");
+            // trace!("Bytes: {bytes:?}");
             trace!("couldn't determine image size, aborting");
             return Ok(None);
         }
@@ -302,7 +302,7 @@ pub async fn download_88x31_image(
     // only include redirects if we didn't transform the url
     let redirect = if res_url != requesting_url && !was_url_transformed {
         Some(RedirectSource {
-            from: url.clone().into(),
+            from: (&url).into(),
             last_visited: chrono::Utc::now(),
         })
     } else {

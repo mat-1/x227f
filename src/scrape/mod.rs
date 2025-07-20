@@ -1,3 +1,5 @@
+use reqwest::redirect;
+
 use crate::USER_AGENT;
 
 pub mod image;
@@ -17,6 +19,8 @@ impl ScrapeContext {
                 .timeout(std::time::Duration::from_secs(30))
                 // there's a few sites that have broken certificates that we still want to accept
                 .danger_accept_invalid_certs(true)
+                // we handle redirects ourselves
+                .redirect(redirect::Policy::none())
                 .build()
                 .unwrap(),
         }

@@ -6,15 +6,17 @@ use std::{
 };
 
 use compact_str::{format_compact, CompactString, ToCompactString};
+use indexmap::IndexSet;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_with::{DeserializeFromStr, SerializeDisplay};
-use tracing::{error, trace};
+use tracing::{error, info, trace, warn};
 use url::Url;
 
 use crate::{
-    check_hosts_list_contains_host, check_hosts_list_contains_url, ratelimiter::Ratelimiter,
-    BANNED_HOSTS, RECRAWL_PAGES_INTERVAL_HOURS,
+    check_hosts_list_contains_host, check_hosts_list_contains_url, pagerank::PageRank,
+    ratelimiter::Ratelimiter, BANNED_HOSTS, DO_NOT_FOLLOW_LINKS_FROM_HOSTS,
+    RECRAWL_PAGES_INTERVAL_HOURS, STARTING_POINT,
 };
 
 /// Something that uniquely identifies a page. You can convert a URL to this,
@@ -29,36 +31,36 @@ pub struct PageId {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct CrawlData {
-    crawling_pages: Vec<Url>,
-
+pub struct CrawlerState {
+    /// Pages that will be requested next. This is created based on PageRank
+    /// scores.
     #[serde(default)]
-    low_priority_crawling_pages: Vec<Url>,
+    #[serde(skip)]
+    pub request_queue: VecDeque<Url>,
 
-    /// Queue for pages that were linked as buttons. We may crawl non-button
-    /// links from these and put them in the low-priority queue.
-    queue: VecDeque<Url>,
-
-    /// Queue for pages that weren't linked as buttons. We won't crawl
-    /// non-button links from these.
-    #[serde(default)]
-    low_priority_queue: VecDeque<Url>,
-    pages: HashMap<PageId, Page>,
+    pub pages: HashMap<PageId, Page>,
 
     #[serde(default)]
     #[serde(skip)]
     pub ratelimiter: Ratelimiter,
 
+    /// Pages that are currently either in the queue or being requested.
     // this is a hashset so it can be looked up quickly
     #[serde(default)]
     #[serde(skip)]
     pub queued_or_crawling_pages: HashSet<PageId>,
 
     /// All the page ids that we've either crawled, are crawling, or have been
-    /// redirected from before. We use this to avoid unnecessarily requeue
+    /// redirected from before.
     #[serde(default)]
     #[serde(skip)]
-    pub known_page_ids: HashSet<PageId>,
+    pub known_page_ids: IndexSet<PageId>,
+    /// This is used when we're updating the queue based on pagerank, we should
+    /// insert into here whenever we add a page to the pagerank struct. Keys are
+    /// indexes of known_page_ids.
+    #[serde(default)]
+    #[serde(skip)]
+    pub urls_for_unvisited_pages: HashMap<u32, Url>,
 
     /// A cache of urls to button hashes. This is only used when a button is
     /// failed to be requested.
@@ -70,15 +72,15 @@ pub struct CrawlData {
     #[serde(default)]
     #[serde(skip)]
     pub button_sources_by_domain: HashMap<CompactString, HashSet<Url>>,
+
+    #[serde(default)]
+    #[serde(skip)]
+    pub pagerank: Arc<RwLock<PageRank>>,
 }
 
-impl PartialEq for CrawlData {
+impl PartialEq for CrawlerState {
     fn eq(&self, other: &Self) -> bool {
-        self.crawling_pages == other.crawling_pages
-            && self.low_priority_crawling_pages == other.low_priority_crawling_pages
-            && self.queue == other.queue
-            && self.low_priority_queue == other.low_priority_queue
-            && self.pages == other.pages
+        self.pages == other.pages
     }
 }
 
@@ -89,7 +91,7 @@ pub struct CachedButton {
     pub last_visited: chrono::DateTime<chrono::Utc>,
 }
 
-pub async fn save_crawl_data(crawl_data: &CrawlData) {
+pub async fn save_crawl_data(crawl_data: &CrawlerState) {
     // save to data/crawl.json (but a temp directory first, and then rename)
     let data_json = serde_json::to_string_pretty(crawl_data).unwrap();
     tokio::fs::write("data/crawl.json.bak", data_json)
@@ -100,71 +102,35 @@ pub async fn save_crawl_data(crawl_data: &CrawlData) {
         .unwrap();
 }
 
-pub async fn load_crawl_data() -> CrawlData {
-    let mut crawl_data: CrawlData =
+pub async fn load_crawl_data() -> CrawlerState {
+    let mut crawl_data: CrawlerState =
         if let Ok(data_json) = tokio::fs::read_to_string("data/crawl.json").await {
             serde_json::from_str(&data_json).unwrap()
         } else {
-            CrawlData::default()
+            CrawlerState::default()
         };
     crawl_data.init();
     crawl_data.refresh_queue();
     crawl_data
 }
 
-impl CrawlData {
+impl CrawlerState {
     fn init(&mut self) {
         // remove banned hosts
-        self.low_priority_queue = self
-            .low_priority_queue
-            .drain(..)
-            .filter(|url| !check_hosts_list_contains_url(BANNED_HOSTS, url))
-            .collect();
         self.pages = self
             .pages
             .drain()
             .filter(|(page_id, _page)| !check_hosts_list_contains_host(BANNED_HOSTS, &page_id.host))
             .collect();
 
-        for url in self.queue.iter() {
-            if !check_hosts_list_contains_url(BANNED_HOSTS, url) {
-                self.queued_or_crawling_pages
-                    .insert(PageId::from(url.clone()));
-            }
-        }
-        for url in self.low_priority_queue.iter() {
-            if !check_hosts_list_contains_url(BANNED_HOSTS, url) {
-                self.queued_or_crawling_pages
-                    .insert(PageId::from(url.clone()));
-            }
-        }
-        for url in self.crawling_pages.iter() {
-            if !check_hosts_list_contains_url(BANNED_HOSTS, url) {
-                self.queued_or_crawling_pages
-                    .insert(PageId::from(url.clone()));
-            }
-        }
-        for url in self.low_priority_crawling_pages.iter() {
-            if !check_hosts_list_contains_url(BANNED_HOSTS, url) {
-                self.queued_or_crawling_pages
-                    .insert(PageId::from(url.clone()));
-            }
-        }
-
         self.known_page_ids
             .extend(self.queued_or_crawling_pages.clone());
 
-        // create button cache
+        // create button cache & pagerank links
         let mut button_cache = self.button_cache.write();
+        let mut pagerank_links = Vec::new();
         for (page_id, page) in &self.pages {
             self.known_page_ids.insert(page_id.clone());
-            for redirect in &page.redirects {
-                self.known_page_ids.insert(redirect.from.clone());
-            }
-            for other_internal_link in &page.other_internal_links {
-                self.known_page_ids
-                    .insert(PageId::from(other_internal_link.clone()));
-            }
             for button in &page.buttons {
                 if let Some(source) = &button.source {
                     button_cache.insert(
@@ -177,64 +143,51 @@ impl CrawlData {
                     );
                 }
             }
+
+            let (page_idx, _) = self.known_page_ids.insert_full(page_id.clone());
+            let links = get_pagerank_links_from_one_page(
+                page,
+                &mut self.known_page_ids,
+                &self.pages,
+                &mut self.urls_for_unvisited_pages,
+            );
+
+            // now actually save the links
+            if pagerank_links.len() <= page_idx {
+                pagerank_links.resize(page_idx + 1, Vec::new());
+            }
+            pagerank_links[page_idx].extend(links.into_iter());
         }
         drop(button_cache);
+        // now save the pagerank links data!
+        {
+            let mut pagerank = PageRank::with_capacity(self.known_page_ids.len());
+            pagerank.add_links(&pagerank_links);
+            for i in 1..=50 {
+                info!("Doing initial PageRank iteration #{i}");
+                pagerank.do_iteration();
+            }
 
-        // add any pages in crawling_pages to the front of the queue
-        if !self.crawling_pages.is_empty() {
-            let mut new_queue = VecDeque::new();
-            for url in self.crawling_pages.drain(..) {
-                new_queue.push_back(url);
-            }
-            new_queue.extend(self.queue.drain(..));
-            self.queued_or_crawling_pages.clear();
-
-            for item in new_queue.iter() {
-                self.add_to_queue(item.clone());
-            }
-        }
-        // and the same for low_priority_crawling_pages
-        if !self.low_priority_crawling_pages.is_empty() {
-            let mut new_queue = VecDeque::new();
-            for url in self.low_priority_crawling_pages.drain(..) {
-                new_queue.push_back(url);
-            }
-            new_queue.extend(self.low_priority_queue.drain(..));
-            self.queued_or_crawling_pages.clear();
-
-            for item in new_queue.iter() {
-                self.add_to_low_priority_queue(item.clone());
-            }
+            *self.pagerank.write() = pagerank;
         }
 
-        if self.queue.is_empty() && self.pages.is_empty() {
+        if self.pages.is_empty() {
             // default page if there's no data
-            self.add_to_queue(Url::parse("https://matdoes.dev/retro").unwrap());
+            self.add_to_queue(Url::parse(STARTING_POINT).unwrap());
         }
     }
 
     /// Remove the URL from queue and add it to crawling_pages.
-    pub fn start_crawling(&mut self, url: Url) {
-        let page_id = PageId::from(url.clone());
-        self.queue.retain(|u| u != &url);
-        self.crawling_pages.push(url);
-        self.queued_or_crawling_pages.insert(page_id.clone());
-        self.known_page_ids.insert(page_id);
-    }
-
-    pub fn start_crawling_low_priority(&mut self, url: Url) {
-        let page_id = PageId::from(url.clone());
-        self.low_priority_queue.retain(|u| u != &url);
-        self.low_priority_crawling_pages.push(url);
+    pub fn start_crawling(&mut self, url: &Url) {
+        let page_id = PageId::from(url);
+        self.request_queue.retain(|u| u != url);
         self.queued_or_crawling_pages.insert(page_id.clone());
         self.known_page_ids.insert(page_id);
     }
 
     /// Remove the URL from crawling_pages and queued_or_crawling_pages.
-    pub fn finish_crawling(&mut self, url: Url) {
-        let page_id = PageId::from(url.clone());
-        self.crawling_pages.retain(|u| u != &url);
-        self.low_priority_crawling_pages.retain(|u| u != &url);
+    pub fn finish_crawling(&mut self, url: &Url) {
+        let page_id = PageId::from(url);
         self.queued_or_crawling_pages.remove(&page_id);
     }
 
@@ -244,56 +197,81 @@ impl CrawlData {
             return;
         }
 
-        let page_id = PageId::from(url.clone());
+        let page_id = PageId::from(&url);
         if self.queued_or_crawling_pages.contains(&page_id) {
             return;
         }
         trace!("adding {url} to queue");
-        self.queue.push_back(url);
-        self.queued_or_crawling_pages.insert(page_id.clone());
-        self.known_page_ids.insert(page_id);
-    }
-
-    pub fn add_to_low_priority_queue(&mut self, url: Url) {
-        if check_hosts_list_contains_url(BANNED_HOSTS, &url) {
-            return;
-        }
-
-        let page_id = PageId::from(url.clone());
-        if self.queued_or_crawling_pages.contains(&page_id) {
-            return;
-        }
-        trace!("adding {url} to low priority queue");
-        self.low_priority_queue.push_back(url);
+        self.request_queue.push_back(url);
         self.queued_or_crawling_pages.insert(page_id.clone());
         self.known_page_ids.insert(page_id);
     }
 
     pub fn refresh_queue(&mut self) {
         // add pages that haven't been requested in a week
-        // OR if a page failed to load then wait an hour * 2^(failed times - 1)
+        // OR if a page failed to load, then wait an hour * 2^(failed times - 1)
+
+        let mut pagerank = self.pagerank.write();
+
+        for _ in 0..5 {
+            pagerank.do_iteration();
+        }
+
+        let mut out = std::fs::File::create("target/pagerank.txt.tmp").unwrap();
+        pagerank.write_top_scores(&mut out, 100_000, &self.known_page_ids);
+        std::fs::rename("target/pagerank.txt.tmp", "target/pagerank.txt").unwrap();
+
+        let top_scores = pagerank.get_all_sorted();
 
         let mut adding_to_queue = Vec::new();
-        for page in self.pages.values() {
-            if page.failed > 0 {
-                let wait_time =
-                    std::time::Duration::from_secs(60 * 60 * 2u64.pow(page.failed as u32 - 1));
-                if page.last_visited + wait_time < chrono::Utc::now() {
+        for (page_idx, pagerank_score) in top_scores {
+            // note that 0.15 is typically the lowest (due to the pagerank damping factor)
+            if pagerank_score < 0.151 {
+                // pagerank score too low, not worth scraping :sleeping:
+                break;
+            }
+            let Some(page_id) = self.known_page_ids.get_index(page_idx as usize) else {
+                warn!("getting page idx {page_idx} in known_page_ids failed!");
+                continue;
+            };
+            if self.queued_or_crawling_pages.contains(&page_id) {
+                // page is already being crawled, no point in adding it to the queue again
+                continue;
+            }
+
+            if let Some(page) = self.pages.get(page_id) {
+                if page.failed > 0 {
+                    let wait_time =
+                        std::time::Duration::from_secs(60 * 60 * 2u64.pow(page.failed as u32 - 1));
+                    if page.last_visited + wait_time < chrono::Utc::now() {
+                        adding_to_queue.push(page.url.clone());
+                    }
+                } else if page.last_visited
+                    + chrono::Duration::hours(RECRAWL_PAGES_INTERVAL_HOURS as i64)
+                    < chrono::Utc::now()
+                {
                     adding_to_queue.push(page.url.clone());
                 }
-            } else if page.last_visited
-                + chrono::Duration::hours(RECRAWL_PAGES_INTERVAL_HOURS as i64)
-                < chrono::Utc::now()
-            {
-                adding_to_queue.push(page.url.clone());
+            } else {
+                // this means that we haven't visited the page before
+                let Some(url) = self.urls_for_unvisited_pages.remove(&page_idx) else {
+                    // can happen for non-pages like redirects, we don't wanna visit those
+                    warn!("getting page_id {page_id} in urls_for_unvisited_pages failed!");
+                    continue;
+                };
+
+                adding_to_queue.push(url.clone());
+            }
+
+            if adding_to_queue.len() + self.request_queue.len() > 10_000 {
+                // this is enough pages for now
+                break;
             }
         }
 
-        // remove urls that are already in the queue or being crawled
-        adding_to_queue.retain(|url| {
-            let page_id = PageId::from(url.clone());
-            !self.queued_or_crawling_pages.contains(&page_id)
-        });
+        drop(pagerank);
+
+        info!("Adding {} new urls to queue", adding_to_queue.len());
 
         for url in adding_to_queue {
             self.add_to_queue(url);
@@ -305,15 +283,7 @@ impl CrawlData {
     }
 
     pub fn insert_page(&mut self, page: Page) {
-        let page_id = PageId::from(page.url.clone());
-        for redirect in &page.redirects {
-            self.known_page_ids.insert(redirect.from.clone());
-        }
-
-        // if a redirect is in pages then it has to be removed from there
-        for new_redirect in &page.redirects {
-            self.pages.remove(&new_redirect.from);
-        }
+        let page_id = PageId::from(&page.url);
 
         let source_host = page.url.host_str().unwrap_or_default().to_compact_string();
 
@@ -342,20 +312,6 @@ impl CrawlData {
             existing_page.other_internal_links = page.other_internal_links;
             existing_page.last_visited = page.last_visited;
             existing_page.failed = page.failed;
-
-            // extend redirects
-            for new_redirect in page.redirects {
-                if let Some(existing_redirect) = existing_page
-                    .redirects
-                    .iter_mut()
-                    .find(|r| r.from == new_redirect.from)
-                {
-                    existing_redirect.last_visited = new_redirect.last_visited;
-                } else {
-                    self.known_page_ids.insert(new_redirect.from.clone());
-                    existing_page.redirects.push(new_redirect);
-                }
-            }
         } else {
             self.pages.insert(page_id.clone(), page);
             self.known_page_ids.insert(page_id);
@@ -363,7 +319,7 @@ impl CrawlData {
     }
 
     pub fn queue(&self) -> &VecDeque<Url> {
-        &self.queue
+        &self.request_queue
     }
 
     pub fn pages(&self) -> &HashMap<PageId, Page> {
@@ -374,14 +330,8 @@ impl CrawlData {
     }
 
     pub fn pop_and_start_crawling(&mut self) -> Option<Url> {
-        let url = pop_from_given_queue(&mut self.queue, &mut self.ratelimiter)?;
-        self.start_crawling(url.clone());
-        Some(url)
-    }
-
-    pub fn pop_and_start_crawling_low_priority(&mut self) -> Option<Url> {
-        let url = pop_from_given_queue(&mut self.low_priority_queue, &mut self.ratelimiter)?;
-        self.start_crawling_low_priority(url.clone());
+        let url = pop_from_given_queue(&mut self.request_queue, &mut self.ratelimiter)?;
+        self.start_crawling(&url);
         Some(url)
     }
 
@@ -392,6 +342,57 @@ impl CrawlData {
     pub fn is_in_queue_or_crawling(&self, page_id: &PageId) -> bool {
         self.queued_or_crawling_pages.contains(page_id)
     }
+}
+
+pub fn get_pagerank_links_from_one_page(
+    page: &Page,
+    known_page_ids: &mut IndexSet<PageId>,
+    pages: &HashMap<PageId, Page>,
+    urls_for_unvisited_pages: &mut HashMap<u32, Url>,
+) -> Vec<(u32, f32)> {
+    let mut links = Vec::new();
+
+    let is_no_follow = check_hosts_list_contains_url(DO_NOT_FOLLOW_LINKS_FROM_HOSTS, &page.url);
+
+    if is_no_follow {
+        // disregard the links if we're not allowed to follow links from this page
+        return vec![];
+    }
+
+    for other_internal_link in &page.other_internal_links {
+        let other_internal_link_page_id = PageId::from(other_internal_link);
+        let (internal_link_idx, _) =
+            known_page_ids.insert_full(other_internal_link_page_id.clone());
+        // non-88x31 links have a weight of 0.02, we still explore them just in case
+        // they have more 88x31s on other pages
+        links.push((internal_link_idx as u32, 0.02));
+        if !pages.contains_key(&other_internal_link_page_id) {
+            urls_for_unvisited_pages.insert(internal_link_idx as u32, other_internal_link.clone());
+        }
+    }
+    for button in &page.buttons {
+        if let Some(target) = &button.target {
+            let target_page_id = PageId::from(target);
+            let (target_page_idx, _) = known_page_ids.insert_full(target_page_id.clone());
+            links.push((target_page_idx as u32, 1.));
+            if !pages.contains_key(&target_page_id) {
+                urls_for_unvisited_pages.insert(target_page_idx as u32, target.clone());
+            }
+        }
+    }
+
+    if let Some(target) = &page.redirects_to
+        && matches!(target.scheme(), "http" | "https")
+    {
+        let target_page_id = PageId::from(target);
+        let (target_page_idx, _) = known_page_ids.insert_full(target_page_id.clone());
+        links.push((target_page_idx as u32, 0.1));
+        if !pages.contains_key(&target_page_id) {
+            urls_for_unvisited_pages.insert(target_page_idx as u32, target.clone());
+        }
+    }
+
+    links
 }
 
 fn pop_from_given_queue(queue: &mut VecDeque<Url>, ratelimiter: &mut Ratelimiter) -> Option<Url> {
@@ -430,11 +431,14 @@ pub struct Page {
     pub failed: usize,
     pub buttons: Vec<ButtonData>,
     #[serde(default)]
-    #[serde(skip_serializing_if = "HashSet::is_empty")]
-    pub other_internal_links: HashSet<Url>,
+    #[serde(skip_serializing_if = "IndexSet::is_empty")]
+    pub other_internal_links: IndexSet<Url>,
+
+    /// This isn't actually a page and it's just a redirect. The fields with
+    /// links should be empty in this case.
     #[serde(default)]
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub redirects: Vec<RedirectSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub redirects_to: Option<Url>,
 }
 
 // https://stackoverflow.com/a/53900684
@@ -507,9 +511,10 @@ impl FromStr for PageId {
     }
 }
 
-impl From<Url> for PageId {
-    fn from(url: Url) -> Self {
+impl From<&Url> for PageId {
+    fn from(url: &Url) -> Self {
         let host = url.host_str().unwrap_or_else(|| {
+            // this can happen with mailto links
             error!("url {url} has no host, this should be impossible");
             ""
         });

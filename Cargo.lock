@@ -1198,9 +1198,9 @@ dependencies = [
 
 [[package]]
 name = "indexmap"
-version = "2.7.0"
+version = "2.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62f822373a4fe84d4bb149bf54e584a7f4abec90e072ed49cda0edea5b95471f"
+checksum = "fe4cd85333e22411419a0bcae1297d25e58c9443848b11dc6a86fefe8c78a661"
 dependencies = [
  "equivalent",
  "hashbrown 0.15.2",
@@ -1570,7 +1570,7 @@ dependencies = [
  "env_logger",
  "filetime",
  "glob",
- "indexmap 2.7.0",
+ "indexmap 2.10.0",
  "libdeflater",
  "log",
  "rayon",
@@ -1624,7 +1624,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4c5cc86750666a3ed20bdaf5ca2a0344f9c67674cae0515bec2da16fbaa47db"
 dependencies = [
  "fixedbitset",
- "indexmap 2.7.0",
+ "indexmap 2.10.0",
 ]
 
 [[package]]
@@ -2275,7 +2275,7 @@ dependencies = [
  "chrono",
  "hex",
  "indexmap 1.9.3",
- "indexmap 2.7.0",
+ "indexmap 2.10.0",
  "serde",
  "serde_derive",
  "serde_json",
@@ -2374,6 +2374,26 @@ name = "smallvec"
 version = "1.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3c5e1a9a646d36c3599cd173a41282daf47c44583ad367b8e6837255952e5c67"
+
+[[package]]
+name = "soa-rs"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b75ae4668062b095fda87ba54118697bed601f07f6c68bf50289a25ca0c8c935"
+dependencies = [
+ "soa-rs-derive",
+]
+
+[[package]]
+name = "soa-rs-derive"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c09121507da587d3434e5929ce3321162f36bd3eff403873cb163c06b176913"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "socket2"
@@ -2724,7 +2744,7 @@ version = "0.22.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ae48d6208a266e853d946088ed816055e556cc6028c5e8e2b84d9fa5dd7c7f5"
 dependencies = [
- "indexmap 2.7.0",
+ "indexmap 2.10.0",
  "serde",
  "serde_spanned",
  "toml_datetime",
@@ -3228,6 +3248,7 @@ dependencies = [
  "futures-util",
  "hex",
  "image",
+ "indexmap 2.10.0",
  "oxipng",
  "parking_lot",
  "percent-encoding",
@@ -3238,6 +3259,7 @@ dependencies = [
  "serde_json",
  "serde_with",
  "sha2",
+ "soa-rs",
  "tokio",
  "tracing",
  "tracing-subscriber",

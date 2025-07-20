@@ -1,23 +1,26 @@
+#![feature(let_chains)]
+
 pub mod data;
 pub mod garbagecollect;
+mod pagerank;
 pub mod processed;
 pub mod ratelimiter;
 pub mod scrape;
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use compact_str::CompactString;
-use data::{CrawlData, PageId};
+use data::{CrawlerState, PageId};
 use parking_lot::Mutex;
 use tracing::{debug, error, info, level_filters::LevelFilter};
 use tracing_subscriber::{prelude::*, EnvFilter};
 use url::Url;
 
-use crate::data::Page;
+use crate::data::{get_pagerank_links_from_one_page, Page};
 
 pub const USER_AGENT: &str =
     "Mozilla/5.0 (88x31 crawler by mat@matdoes.dev +https://github.com/mat-1/x227f)";
@@ -46,12 +49,15 @@ pub const DO_NOT_FOLLOW_LINKS_FROM_HOSTS: &[&str] = &[
 /// Hosts that shouldn't be scraped or indexed. Adding a host to this will
 /// retroactively remove it from the database.
 pub const BANNED_HOSTS: &[&str] = &[
-    "prlog.ru",
+    "prlog.ru",                  // too many pages
     "strawberryfoundations.xyz", // crawler abuse
     "paddyk45.duckdns.org",      // crawler abuse
     "dvd-rank.com",              // nsfw
     "adult-plus.com",            // nsfw
 ];
+
+/// The page that's requested if the database is empty.
+pub const STARTING_POINT: &str = "https://matdoes.dev/retro";
 
 /// Re-encode every 88x31 and exit instead of actually crawling.
 pub const FIX_IMAGES_MODE: bool = false;
@@ -107,7 +113,7 @@ async fn main() {
         }));
     }
 
-    let mut previous_saved_data: CrawlData = initial_crawl_data.clone();
+    let mut previous_saved_data: CrawlerState = initial_crawl_data.clone();
 
     // we don't save crawl.json immediately so if the user accidentally messed up if
     // they stop the program quickly enough it won't delete the database
@@ -118,10 +124,11 @@ async fn main() {
     let mut last_garbage_collected_at: Option<Instant> = None;
 
     loop {
-        // save and refresh queue every 5 seconds
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        // save and refresh queue periodically
+        tokio::time::sleep(Duration::from_secs(15)).await;
 
         {
+            debug!("maybe saving");
             let crawl_data_clone = crawl_data.lock().clone();
             // don't bother saving if the data is the same as before
             if crawl_data_clone != previous_saved_data {
@@ -157,42 +164,33 @@ async fn main() {
     }
 }
 
-async fn crawl_task(ctx: scrape::ScrapeContext, crawl_data: Arc<Mutex<CrawlData>>) {
+async fn crawl_task(ctx: scrape::ScrapeContext, crawl_state: Arc<Mutex<CrawlerState>>) {
     loop {
-        while let Some((url, is_normal_priority)) = {
+        while let Some(url) = {
             // this is necessary since otherwise crawl_data stays locked
-            {
-                let mut crawl_data = crawl_data.lock();
-                if let Some(url) = crawl_data.pop_and_start_crawling().clone() {
-                    Some((url, true))
-                } else {
-                    crawl_data
-                        .pop_and_start_crawling_low_priority()
-                        .clone()
-                        .map(|url| (url, false))
-                }
-            }
+            let mut crawl_data = crawl_state.lock();
+            crawl_data.pop_and_start_crawling().clone()
         } {
             let mut already_scraping_pages_clone =
-                crawl_data.lock().queued_or_crawling_pages.clone();
-            already_scraping_pages_clone.remove(&PageId::from(url.clone()));
+                crawl_state.lock().queued_or_crawling_pages.clone();
+            already_scraping_pages_clone.remove(&PageId::from(&url));
 
             // this is the original url since we might get redirected to a different url
             let original_url = url.clone();
-            let original_url_page_id = PageId::from(original_url.clone());
+            let original_url_page_id = PageId::from(&original_url);
 
             let scrape_page_res = match scrape::page::download_page(&ctx, url).await {
                 Ok(download_page_res) => {
-                    let new_page_id = PageId::from(download_page_res.res.url().clone());
+                    let new_page_id = PageId::from(download_page_res.res.url());
                     if new_page_id != original_url_page_id
-                        && crawl_data.lock().is_in_queue_or_crawling(&new_page_id)
+                        && crawl_state.lock().is_in_queue_or_crawling(&new_page_id)
                     {
                         // the page we got redirected to is already being
                         // crawled, so don't scrape it
 
                         Ok(None)
                     } else {
-                        let button_cache = crawl_data.lock().button_cache.clone();
+                        let button_cache = crawl_state.lock().button_cache.clone();
                         match scrape::page::scrape_page_from_download(
                             &ctx,
                             download_page_res,
@@ -216,7 +214,7 @@ async fn crawl_task(ctx: scrape::ScrapeContext, crawl_data: Arc<Mutex<CrawlData>
                         let mut new_buttons_count = 0;
 
                         if !page.buttons.is_empty() {
-                            let crawl_data = crawl_data.lock();
+                            let crawl_data = crawl_state.lock();
                             let page_url_host = page.url.host_str().unwrap_or_default();
                             let button_sources =
                                 crawl_data.button_sources_by_domain.get(page_url_host);
@@ -237,38 +235,34 @@ async fn crawl_task(ctx: scrape::ScrapeContext, crawl_data: Arc<Mutex<CrawlData>
 
                         new_buttons_count
                     };
-                    if is_normal_priority || new_buttons_count > 0 {
-                        debug!(
-                            "adding {original_url} to database, which has {} buttons ({new_buttons_count} new)",
-                            page.buttons.len()
-                        );
-                        // add the page to crawl_data
-                        let mut crawl_data = crawl_data.lock();
-                        crawl_data.insert_page(page.clone());
-                        let do_not_follow_links = check_hosts_list_contains_url(
-                            DO_NOT_FOLLOW_LINKS_FROM_HOSTS,
-                            &page.url,
-                        );
-                        if !do_not_follow_links {
-                            for button in page.buttons {
-                                // add button targets to queue if they're previously unseen pages
-                                if let Some(target) = button.target {
-                                    let target_page_id = PageId::from(target.clone());
-                                    if !crawl_data.is_page_id_known(&target_page_id) {
-                                        crawl_data.add_to_queue(target.clone());
-                                    }
-                                }
-                            }
-                            for url in page.other_internal_links {
-                                let url_page_id = PageId::from(url.clone());
-                                if !crawl_data.is_page_id_known(&url_page_id) {
-                                    crawl_data.add_to_low_priority_queue(url.clone());
-                                }
-                            }
-                        }
-                    } else {
-                        debug!("not adding {original_url} to database since it's low priority and has no new buttons");
-                    }
+
+                    debug!(
+                        "adding {original_url} to database, which has {} buttons ({new_buttons_count} new)",
+                        page.buttons.len()
+                    );
+                    // add the page to crawl_data
+                    let mut crawl_state = crawl_state.lock();
+                    crawl_state.insert_page(page.clone());
+                    let page_id = PageId::from(&page.url);
+                    let links = {
+                        let CrawlerState {
+                            ref mut known_page_ids,
+                            ref pages,
+                            ref mut urls_for_unvisited_pages,
+                            ..
+                        } = &mut *crawl_state;
+                        get_pagerank_links_from_one_page(
+                            &page,
+                            known_page_ids,
+                            pages,
+                            urls_for_unvisited_pages,
+                        )
+                    };
+                    let (page_idx, _) = crawl_state.known_page_ids.insert_full(page_id.clone());
+                    crawl_state
+                        .pagerank
+                        .write()
+                        .set_new_links_for_page(page_idx as u32, &links);
                 }
                 Ok(None) => {
                     // none means that we got redirected to somewhere that's
@@ -279,29 +273,26 @@ async fn crawl_task(ctx: scrape::ScrapeContext, crawl_data: Arc<Mutex<CrawlData>
                 }
                 Err(e) => {
                     error!("error scraping page {original_url}: {e}");
-                    if is_normal_priority {
-                        let mut crawl_data = crawl_data.lock();
-                        if let Some(existing_page) = crawl_data.get_page_mut(&original_url_page_id)
-                        {
-                            existing_page.last_visited = chrono::Utc::now();
-                            existing_page.failed += 1;
-                        } else {
-                            crawl_data.insert_page(Page {
-                                url: original_url.clone(),
-                                last_visited: chrono::Utc::now(),
-                                failed: 1,
-                                buttons: vec![],
-                                other_internal_links: HashSet::default(),
-                                redirects: vec![],
-                            });
-                        }
+                    let mut crawl_data = crawl_state.lock();
+                    if let Some(existing_page) = crawl_data.get_page_mut(&original_url_page_id) {
+                        existing_page.last_visited = chrono::Utc::now();
+                        existing_page.failed += 1;
+                    } else {
+                        crawl_data.insert_page(Page {
+                            url: original_url.clone(),
+                            last_visited: chrono::Utc::now(),
+                            failed: 1,
+                            buttons: vec![],
+                            other_internal_links: Default::default(),
+                            redirects_to: None,
+                        });
                     }
                 }
             };
 
             // don't call finish_crawling until the end so if the page points to itself it
             // doesn't get added twice
-            crawl_data.lock().finish_crawling(original_url);
+            crawl_state.lock().finish_crawling(&original_url);
         }
 
         // queue is empty, wait a second and check again
@@ -374,7 +365,7 @@ async fn do_fix_images_mode() {
         pages: Box<[PageId]>,
         i: usize,
         total: usize,
-        // TODO: this was disable during development, should probably be properly implemented now
+        // TODO: this was disabled during development, should probably be properly implemented now
         _to_delete: Arc<Mutex<Vec<(String, CompactString)>>>,
     ) {
         let file_ext = button_file_exts.get(&old_hash).unwrap();

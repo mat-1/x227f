@@ -16,6 +16,7 @@ image = { git = "https://github.com/image-rs/image", features = [
     "webp",
     "avif",
 ] }
+indexmap = { version = "2.10.0", features = ["serde"] }
 oxipng = { version = "9.1.3", features = ["zopfli"] }
 parking_lot = { version = "0.12.3", features = ["deadlock_detection"] }
 percent-encoding = "2.3.1"
@@ -29,6 +30,7 @@ serde_cbor = "0.11.2"
 serde_json = "1.0.134"
 serde_with = "3.12.0"
 sha2 = "0.10.8"
+soa-rs = "0.8.1"
 tokio = { version = "1.42.0", features = ["full"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }

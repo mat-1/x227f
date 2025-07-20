@@ -7,12 +7,14 @@ use std::{
 use compact_str::{CompactString, ToCompactString};
 use eyre::bail;
 use futures_util::StreamExt;
+use indexmap::IndexSet;
 use parking_lot::RwLock;
+use reqwest::header;
 use tracing::{debug, instrument, warn};
 use url::Url;
 
 use crate::{
-    data::{CachedButton, Page, RedirectSource},
+    data::{CachedButton, Page, PageId},
     scrape,
 };
 
@@ -22,9 +24,27 @@ use super::ScrapeContext;
 #[instrument(skip_all, fields(url = %res.url()))]
 pub async fn scrape_page_from_download(
     ctx: &ScrapeContext,
-    DownloadPageResult { res, redirect }: DownloadPageResult,
+    DownloadPageResult { res }: DownloadPageResult,
     button_cache: &Arc<RwLock<HashMap<Url, CachedButton>>>,
 ) -> eyre::Result<Page> {
+    if res.status().is_redirection() {
+        if let Some(redirect_target) = res
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|h| h.to_str().ok())
+            .and_then(|l| res.url().join(l).ok())
+            && redirect_target != *res.url()
+        {
+            return Ok(Page {
+                url: res.url().clone(),
+                last_visited: chrono::Utc::now(),
+                failed: 0,
+                buttons: vec![],
+                other_internal_links: Default::default(),
+                redirects_to: Some(redirect_target),
+            });
+        }
+    }
     if !res.status().is_success() {
         // if it's an error page then don't scrape it
         return Ok(Page {
@@ -32,8 +52,8 @@ pub async fn scrape_page_from_download(
             last_visited: chrono::Utc::now(),
             failed: 0,
             buttons: vec![],
-            other_internal_links: HashSet::default(),
-            redirects: redirect.into_iter().collect(),
+            other_internal_links: Default::default(),
+            redirects_to: None,
         });
     }
 
@@ -65,8 +85,8 @@ pub async fn scrape_page_from_download(
                 last_visited: chrono::Utc::now(),
                 failed: 0,
                 buttons: vec![],
-                other_internal_links: HashSet::default(),
-                redirects: redirect.into_iter().collect(),
+                other_internal_links: Default::default(),
+                redirects_to: None,
             });
         }
     }
@@ -88,46 +108,55 @@ pub async fn scrape_page_from_download(
         failed: 0,
         buttons,
         other_internal_links,
-        redirects: redirect.into_iter().collect(),
+        redirects_to: None,
     })
 }
 
 pub struct DownloadPageResult {
     pub res: reqwest::Response,
-    pub redirect: Option<RedirectSource>,
 }
 
 #[instrument(skip_all, fields(url = %url))]
-pub async fn download_page(ctx: &ScrapeContext, url: Url) -> eyre::Result<DownloadPageResult> {
-    if url.host_str().iter().any(|host| {
-        host.chars()
-            .any(|c| !c.is_ascii_alphanumeric() && c != '-' && c != '.')
-    }) {
-        bail!("invalid host");
+pub async fn download_page(ctx: &ScrapeContext, mut url: Url) -> eyre::Result<DownloadPageResult> {
+    let mut allow_basic_redirect = true;
+
+    loop {
+        if url.host_str().iter().any(|host| {
+            host.chars()
+                .any(|c| !c.is_ascii_alphanumeric() && c != '-' && c != '.')
+        }) {
+            bail!("invalid host");
+        }
+
+        let request_start = Instant::now();
+        let res = ctx.http.get(url.clone()).send().await?;
+        let request_duration = request_start.elapsed();
+        debug!("page request took {request_duration:?}");
+
+        if allow_basic_redirect && res.status().is_redirection() {
+            if let Some(redirect_target) = res
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|h| h.to_str().ok())
+            .and_then(|l| res.url().join(l).ok())
+            // if the redirect is to a different url that has the same PageId, try downloading it again
+            && redirect_target != *res.url()
+            && PageId::from(&redirect_target) == PageId::from(res.url())
+            {
+                debug!("doing basic redirect to {redirect_target}");
+                url = redirect_target;
+                allow_basic_redirect = false;
+                continue;
+            }
+        }
+
+        return Ok(DownloadPageResult { res });
     }
-
-    let request_start = Instant::now();
-    let res = ctx.http.get(url.clone()).send().await?;
-    let request_duration = request_start.elapsed();
-    debug!("page request took {request_duration:?}");
-
-    let res_url = res.url().clone();
-
-    let redirect = if res_url != url {
-        Some(RedirectSource {
-            from: url.clone().into(),
-            last_visited: chrono::Utc::now(),
-        })
-    } else {
-        None
-    };
-
-    Ok(DownloadPageResult { res, redirect })
 }
 
 pub struct CandidateLinks {
     pub candidate_buttons: Vec<CandidateButton>,
-    pub other_internal_links: HashSet<Url>,
+    pub other_internal_links: IndexSet<Url>,
 }
 
 fn candidate_links_from_html(body: &str, res_url: &Url) -> CandidateLinks {
@@ -199,7 +228,7 @@ fn candidate_links_from_html(body: &str, res_url: &Url) -> CandidateLinks {
 
     // now find the links for those img elements
     let mut candidate_buttons = Vec::new();
-    let mut other_internal_links = HashSet::new();
+    let mut other_internal_links = IndexSet::new();
     // add defaults for every button so they stay in order of the imgs
     for img in candidate_img_els.iter() {
         candidate_buttons.push(CandidateButton {
@@ -273,6 +302,8 @@ fn candidate_links_from_html(body: &str, res_url: &Url) -> CandidateLinks {
             .iter()
             .any(|button| button.href.as_ref() == Some(link))
     });
+    // only consider the first 8 internal links
+    other_internal_links.truncate(8);
 
     CandidateLinks {
         candidate_buttons,

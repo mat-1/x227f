@@ -2,9 +2,9 @@ use std::collections::HashSet;
 
 use tracing::info;
 
-use crate::data::CrawlData;
+use crate::data::CrawlerState;
 
-pub fn delete_unlinked_buttons(crawl_data: &CrawlData) {
+pub fn delete_unlinked_buttons(crawl_data: &CrawlerState) {
     info!("Garbage collecting images...");
 
     let mut linked_button_filenames = HashSet::new();
