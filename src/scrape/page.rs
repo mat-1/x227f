@@ -9,16 +9,14 @@ use eyre::bail;
 use futures_util::StreamExt;
 use indexmap::IndexSet;
 use parking_lot::RwLock;
-use reqwest::header;
 use tracing::{debug, instrument, warn};
 use url::Url;
 
+use super::ScrapeContext;
 use crate::{
     data::{CachedButton, Page, PageId},
-    scrape,
+    scrape::{self, get_redirect_target},
 };
-
-use super::ScrapeContext;
 
 /// Scrape the given page.
 #[instrument(skip_all, fields(url = %res.url()))]
@@ -27,23 +25,17 @@ pub async fn scrape_page_from_download(
     DownloadPageResult { res }: DownloadPageResult,
     button_cache: &Arc<RwLock<HashMap<Url, CachedButton>>>,
 ) -> eyre::Result<Page> {
-    if res.status().is_redirection() {
-        if let Some(redirect_target) = res
-            .headers()
-            .get(header::LOCATION)
-            .and_then(|h| h.to_str().ok())
-            .and_then(|l| res.url().join(l).ok())
-            && redirect_target != *res.url()
-        {
-            return Ok(Page {
-                url: res.url().clone(),
-                last_visited: chrono::Utc::now(),
-                failed: 0,
-                buttons: vec![],
-                other_internal_links: Default::default(),
-                redirects_to: Some(redirect_target),
-            });
-        }
+    if let Some(redirect_target) = get_redirect_target(&res)
+        && redirect_target != *res.url()
+    {
+        return Ok(Page {
+            url: res.url().clone(),
+            last_visited: chrono::Utc::now(),
+            failed: 0,
+            buttons: vec![],
+            other_internal_links: Default::default(),
+            redirects_to: Some(redirect_target),
+        });
     }
     if !res.status().is_success() {
         // if it's an error page then don't scrape it
@@ -133,12 +125,8 @@ pub async fn download_page(ctx: &ScrapeContext, mut url: Url) -> eyre::Result<Do
         let request_duration = request_start.elapsed();
         debug!("page request took {request_duration:?}");
 
-        if allow_basic_redirect && res.status().is_redirection() {
-            if let Some(redirect_target) = res
-            .headers()
-            .get(header::LOCATION)
-            .and_then(|h| h.to_str().ok())
-            .and_then(|l| res.url().join(l).ok())
+        if allow_basic_redirect {
+            if let Some(redirect_target) = get_redirect_target(&res)
             // if the redirect is to a different url that has the same PageId, try downloading it again
             && redirect_target != *res.url()
             && PageId::from(&redirect_target) == PageId::from(res.url())

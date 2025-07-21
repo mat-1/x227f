@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fmt,
+    io::Write,
     str::FromStr,
     sync::Arc,
 };
@@ -68,11 +69,6 @@ pub struct CrawlerState {
     #[serde(skip)]
     pub button_cache: Arc<RwLock<HashMap<Url, CachedButton>>>,
 
-    /// This is used for anti-spam.
-    #[serde(default)]
-    #[serde(skip)]
-    pub button_sources_by_domain: HashMap<CompactString, HashSet<Url>>,
-
     #[serde(default)]
     #[serde(skip)]
     pub pagerank: Arc<RwLock<PageRank>>,
@@ -131,6 +127,7 @@ impl CrawlerState {
         let mut pagerank_links = Vec::new();
         for (page_id, page) in &self.pages {
             self.known_page_ids.insert(page_id.clone());
+
             for button in &page.buttons {
                 if let Some(source) = &button.source {
                     button_cache.insert(
@@ -217,9 +214,9 @@ impl CrawlerState {
             pagerank.do_iteration();
         }
 
-        let mut out = std::fs::File::create("target/pagerank.txt.tmp").unwrap();
-        pagerank.write_top_scores(&mut out, 100_000, &self.known_page_ids);
-        std::fs::rename("target/pagerank.txt.tmp", "target/pagerank.txt").unwrap();
+        // let mut out = std::fs::File::create("target/pagerank.txt.tmp").unwrap();
+        // pagerank.write_top_scores(&mut out, 100_000, &self.known_page_ids);
+        // std::fs::rename("target/pagerank.txt.tmp", "target/pagerank.txt").unwrap();
 
         let top_scores = pagerank.get_all_sorted();
 
@@ -276,6 +273,12 @@ impl CrawlerState {
         for url in adding_to_queue {
             self.add_to_queue(url);
         }
+
+        // let mut f = std::fs::File::create("target/queue.txt.tmp").unwrap();
+        // for u in self.queue() {
+        //     writeln!(f, "{u}").unwrap();
+        // }
+        // std::fs::rename("target/queue.txt.tmp", "target/queue.txt").unwrap();
     }
 
     pub fn get_page_mut(&mut self, page_id: &PageId) -> Option<&mut Page> {
@@ -284,8 +287,6 @@ impl CrawlerState {
 
     pub fn insert_page(&mut self, page: Page) {
         let page_id = PageId::from(&page.url);
-
-        let source_host = page.url.host_str().unwrap_or_default().to_compact_string();
 
         // add buttons to cache
         let mut button_cache = self.button_cache.write();
@@ -299,10 +300,6 @@ impl CrawlerState {
                         last_visited: button.last_visited,
                     },
                 );
-                self.button_sources_by_domain
-                    .entry(source_host.clone())
-                    .or_default()
-                    .insert(source.clone());
             }
         }
         drop(button_cache);
@@ -386,6 +383,7 @@ pub fn get_pagerank_links_from_one_page(
     {
         let target_page_id = PageId::from(target);
         let (target_page_idx, _) = known_page_ids.insert_full(target_page_id.clone());
+        // most redirects are bad so we give them a low weight :(
         links.push((target_page_idx as u32, 0.1));
         if !pages.contains_key(&target_page_id) {
             urls_for_unvisited_pages.insert(target_page_idx as u32, target.clone());

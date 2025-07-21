@@ -1,4 +1,11 @@
-use std::{collections::HashMap, io::Cursor, num::NonZeroU8, path::Path, sync::Arc, time::Instant};
+use std::{
+    collections::{HashMap, HashSet},
+    io::Cursor,
+    num::NonZeroU8,
+    path::Path,
+    sync::Arc,
+    time::Instant,
+};
 
 use base64::Engine;
 use eyre::{bail, eyre};
@@ -9,12 +16,12 @@ use sha2::{Digest, Sha256};
 use tracing::{debug, error, instrument, trace, warn};
 use url::Url;
 
+use super::{page::CandidateButton, ScrapeContext};
 use crate::{
     data::{ButtonData, CachedButton, RedirectSource},
+    scrape::get_redirect_target,
     RECRAWL_BUTTONS_INTERVAL_HOURS,
 };
-
-use super::{page::CandidateButton, ScrapeContext};
 
 pub async fn scrape_images(
     ctx: &ScrapeContext,
@@ -280,12 +287,35 @@ pub async fn download_88x31_image(
 
     trace!("downloading image");
     let request_start = Instant::now();
-    let requesting_url = transform_image_url_to_bypass_blocks(url.clone());
+    let mut requesting_url = transform_image_url_to_bypass_blocks(url.clone());
     let was_url_transformed = requesting_url != url;
     if was_url_transformed {
         trace!("image url was transformed to {requesting_url}");
     }
-    let res = ctx.http.get(requesting_url.clone()).send().await?;
+
+    let mut visited_urls = HashSet::new();
+    visited_urls.insert(requesting_url.clone());
+    let mut res;
+    loop {
+        res = ctx.http.get(requesting_url.clone()).send().await?;
+
+        if let Some(redirect_target) = get_redirect_target(&res) {
+            debug!("image redirect from {requesting_url} to {redirect_target}");
+            requesting_url = redirect_target;
+        } else {
+            break;
+        }
+
+        if visited_urls.contains(&requesting_url) {
+            // redirect loop
+            break;
+        }
+        visited_urls.insert(requesting_url.clone());
+        if visited_urls.len() > 3 {
+            // too many redirects
+            break;
+        }
+    }
 
     let request_duration = request_start.elapsed();
     trace!("image request took {request_duration:?}");

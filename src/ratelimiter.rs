@@ -39,7 +39,7 @@ pub fn crawl_delay_for_host(host: &str) -> CrawlDelayResponse {
     let delay_seconds = match host {
         "jcink.net" => 10,
         "web.archive.org" => 10,
-        "neocities.org" => 10,
+        "neocities.org" => 1,
         _ => {
             if let Some(shortened_host) = shorten_host(host) {
                 return crawl_delay_for_host(&shortened_host);

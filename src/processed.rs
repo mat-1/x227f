@@ -113,11 +113,23 @@ pub fn process_crawl_data(crawl_data: &CrawlerState) -> ProcessedData {
     let mut backlinks = vec![Vec::new(); pages.len()];
     let mut backlink_buttons = vec![Vec::new(); pages.len()];
     for (page_id, page) in crawl_data.pages().iter() {
+        let mut page_id = page_id.clone();
         // follow redirects
-        let page_id = redirects.get(page_id).unwrap_or(page_id);
+        let mut prev_redirects = HashSet::new();
+        while let Some(new_target_page_id) = redirects.get(&page_id) {
+            if prev_redirects.contains(&page_id)
+                || &page_id == new_target_page_id
+                || prev_redirects.len() > 3
+            {
+                // infinite redirect!
+                break;
+            }
+            page_id = new_target_page_id.clone();
+            prev_redirects.insert(page_id.clone());
+        }
 
         let page_id_index = pages
-            .binary_search(page_id)
+            .binary_search(&page_id)
             .expect("page_id should be in pages");
 
         for button in &page.buttons {
@@ -127,12 +139,12 @@ pub fn process_crawl_data(crawl_data: &CrawlerState) -> ProcessedData {
 
             if let Some(target) = &button.target {
                 let mut target_page_id = PageId::from(target);
-                // follow redirects (this doesn't need to be a loop since they're already
-                // follows them all the way through)
+                // follow redirects
                 let mut prev_redirects = HashSet::new();
                 while let Some(new_target_page_id) = redirects.get(&target_page_id) {
                     if prev_redirects.contains(&target_page_id)
                         || &target_page_id == new_target_page_id
+                        || prev_redirects.len() > 3
                     {
                         // infinite redirect!
                         break;

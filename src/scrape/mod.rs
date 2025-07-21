@@ -1,4 +1,5 @@
-use reqwest::redirect;
+use reqwest::{header, redirect, Response};
+use url::Url;
 
 use crate::USER_AGENT;
 
@@ -31,4 +32,14 @@ impl Default for ScrapeContext {
     fn default() -> Self {
         Self::new()
     }
+}
+
+pub fn get_redirect_target(res: &Response) -> Option<Url> {
+    if !res.status().is_redirection() {
+        return None;
+    };
+    res.headers()
+        .get(header::LOCATION)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|l| res.url().join(l).ok())
 }

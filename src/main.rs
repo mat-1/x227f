@@ -208,36 +208,8 @@ async fn crawl_task(ctx: scrape::ScrapeContext, crawl_state: Arc<Mutex<CrawlerSt
 
             match scrape_page_res {
                 Ok(Some(page)) => {
-                    // if it's low priority then we'll only save it if it has buttons that aren't
-                    // used anywhere else on the same domain
-                    let new_buttons_count = {
-                        let mut new_buttons_count = 0;
-
-                        if !page.buttons.is_empty() {
-                            let crawl_data = crawl_state.lock();
-                            let page_url_host = page.url.host_str().unwrap_or_default();
-                            let button_sources =
-                                crawl_data.button_sources_by_domain.get(page_url_host);
-                            for potentially_new_button in &page.buttons {
-                                if let Some(source) = &potentially_new_button.source {
-                                    if let Some(button_sources) = button_sources {
-                                        if !button_sources.contains(source) {
-                                            new_buttons_count += 1;
-                                        }
-                                    } else {
-                                        // we didn't know about any buttons on the domain so this
-                                        // button must be new
-                                        new_buttons_count += 1;
-                                    }
-                                }
-                            }
-                        }
-
-                        new_buttons_count
-                    };
-
                     debug!(
-                        "adding {original_url} to database, which has {} buttons ({new_buttons_count} new)",
+                        "adding {original_url} to database, which has {} buttons",
                         page.buttons.len()
                     );
                     // add the page to crawl_data
@@ -312,8 +284,9 @@ pub fn check_hosts_list_contains_host(hosts_list: &[&str], page_domain: &str) ->
 }
 
 fn init_deadlock_detection() {
-    use parking_lot::deadlock;
     use std::thread;
+
+    use parking_lot::deadlock;
     // Create a background thread which checks for deadlocks every 10s
     thread::spawn(move || loop {
         thread::sleep(Duration::from_secs(10));
