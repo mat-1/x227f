@@ -44,7 +44,7 @@ pub fn crawl_delay_for_host(host: &str) -> CrawlDelayResponse {
             if let Some(shortened_host) = shorten_host(host) {
                 return crawl_delay_for_host(&shortened_host);
             }
-            0
+            1
         }
     };
     CrawlDelayResponse {

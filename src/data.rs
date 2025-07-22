@@ -3,6 +3,7 @@ use std::{
     fmt,
     str::FromStr,
     sync::Arc,
+    time::Duration,
 };
 
 use compact_str::{format_compact, CompactString, ToCompactString};
@@ -16,7 +17,7 @@ use url::Url;
 use crate::{
     check_hosts_list_contains_host, check_hosts_list_contains_url, pagerank::PageRank,
     ratelimiter::Ratelimiter, BANNED_HOSTS, DO_NOT_FOLLOW_LINKS_FROM_HOSTS,
-    RECRAWL_PAGES_INTERVAL_HOURS, STARTING_POINT,
+    RECRAWL_PAGES_INTERVAL_HOURS, RECRAWL_POPULAR_PAGES_INTERVAL_HOURS, STARTING_POINT,
 };
 
 /// Something that uniquely identifies a page. You can convert a URL to this,
@@ -213,8 +214,8 @@ impl CrawlerState {
             pagerank.do_iteration();
         }
 
-        // let mut out = std::fs::File::create("target/pagerank.txt.tmp").unwrap();
-        // pagerank.write_top_scores(&mut out, 100_000, &self.known_page_ids);
+        // let mut f = std::fs::File::create("target/pagerank.txt.tmp").unwrap();
+        // pagerank.write_top_scores(&mut f, 100_000, &self.known_page_ids);
         // std::fs::rename("target/pagerank.txt.tmp", "target/pagerank.txt").unwrap();
 
         let top_scores = pagerank.get_all_sorted();
@@ -235,17 +236,21 @@ impl CrawlerState {
                 continue;
             }
 
+            let is_page_popular = pagerank_score > 0.2;
+            let recrawl_interval = chrono::Duration::hours(if is_page_popular {
+                RECRAWL_POPULAR_PAGES_INTERVAL_HOURS
+            } else {
+                RECRAWL_PAGES_INTERVAL_HOURS
+            } as i64);
+
             if let Some(page) = self.pages.get(page_id) {
+                let now = chrono::Utc::now();
                 if page.failed > 0 {
-                    let wait_time =
-                        std::time::Duration::from_secs(60 * 60 * 2u64.pow(page.failed as u32 - 1));
-                    if page.last_visited + wait_time < chrono::Utc::now() {
+                    let wait_time = Duration::from_secs(60 * 60 * 2u64.pow(page.failed as u32 - 1));
+                    if page.last_visited + wait_time < now {
                         adding_to_queue.push(page.url.clone());
                     }
-                } else if page.last_visited
-                    + chrono::Duration::hours(RECRAWL_PAGES_INTERVAL_HOURS as i64)
-                    < chrono::Utc::now()
-                {
+                } else if page.last_visited + recrawl_interval < now {
                     adding_to_queue.push(page.url.clone());
                 }
             } else {
@@ -273,6 +278,7 @@ impl CrawlerState {
             self.add_to_queue(url);
         }
 
+        // use std::io::Write;
         // let mut f = std::fs::File::create("target/queue.txt.tmp").unwrap();
         // for u in self.queue() {
         //     writeln!(f, "{u}").unwrap();
@@ -355,13 +361,25 @@ pub fn get_pagerank_links_from_one_page(
         return vec![];
     }
 
+    let page_id = PageId::from(&page.url);
+    let internal_link_weight = match (page_id.host.as_str(), page_id.path.as_str()) {
+        // multi-page 88x31 archive sites, don't downweigh their internal links so they get
+        // paginated
+        ("hellnet.work", "8831/") => 1.,
+        ("capstasher.neocities.org", _) => 1.,
+        _ => 0.02,
+    };
+
     for other_internal_link in &page.other_internal_links {
         let other_internal_link_page_id = PageId::from(other_internal_link);
         let (internal_link_idx, _) =
             known_page_ids.insert_full(other_internal_link_page_id.clone());
         // non-88x31 links have a weight of 0.02, we still explore them just in case
         // they have more 88x31s on other pages
-        links.push((internal_link_idx as u32, 0.02));
+
+        // capstasher.neocities.org
+
+        links.push((internal_link_idx as u32, internal_link_weight));
         if !pages.contains_key(&other_internal_link_page_id) {
             urls_for_unvisited_pages.insert(internal_link_idx as u32, other_internal_link.clone());
         }

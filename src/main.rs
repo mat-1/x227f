@@ -27,7 +27,10 @@ pub const USER_AGENT: &str =
 /// The maximum number of pages that we can be crawling at the same time.
 pub const CONCURRENT_CRAWLER_COUNT: usize = 100;
 /// How often we should recheck pages in the database.
-pub const RECRAWL_PAGES_INTERVAL_HOURS: u64 = 24;
+pub const RECRAWL_PAGES_INTERVAL_HOURS: u64 = 24 * 30;
+/// How often we should recheck "popular" pages in the database. The meaning of
+/// popular is based on an arbitrary pagerank score.
+pub const RECRAWL_POPULAR_PAGES_INTERVAL_HOURS: u64 = 24;
 /// How long buttons should be cached for. We won't explicitly go out and
 /// download them when this time expires, but we will download them again next
 /// time there's a page with them.
