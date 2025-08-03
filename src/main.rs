@@ -1,5 +1,3 @@
-#![feature(let_chains)]
-
 pub mod data;
 pub mod garbagecollect;
 mod pagerank;
@@ -17,10 +15,10 @@ use compact_str::CompactString;
 use data::{CrawlerState, PageId};
 use parking_lot::Mutex;
 use tracing::{debug, error, info, level_filters::LevelFilter};
-use tracing_subscriber::{prelude::*, EnvFilter};
+use tracing_subscriber::{EnvFilter, prelude::*};
 use url::Url;
 
-use crate::data::{get_pagerank_links_from_one_page, Page};
+use crate::data::{Page, get_pagerank_links_from_one_page};
 
 pub const USER_AGENT: &str =
     "Mozilla/5.0 (88x31 crawler by mat@matdoes.dev +https://github.com/mat-1/x227f)";
@@ -220,7 +218,7 @@ async fn crawl_task(ctx: scrape::ScrapeContext, crawl_state: Arc<Mutex<CrawlerSt
                     crawl_state.insert_page(page.clone());
                     let page_id = PageId::from(&page.url);
                     let links = {
-                        let CrawlerState {
+                        let &mut CrawlerState {
                             ref mut known_page_ids,
                             ref pages,
                             ref mut urls_for_unvisited_pages,
@@ -291,19 +289,21 @@ fn init_deadlock_detection() {
 
     use parking_lot::deadlock;
     // Create a background thread which checks for deadlocks every 10s
-    thread::spawn(move || loop {
-        thread::sleep(Duration::from_secs(10));
-        let deadlocks = deadlock::check_deadlock();
-        if deadlocks.is_empty() {
-            continue;
-        }
+    thread::spawn(move || {
+        loop {
+            thread::sleep(Duration::from_secs(10));
+            let deadlocks = deadlock::check_deadlock();
+            if deadlocks.is_empty() {
+                continue;
+            }
 
-        println!("{} deadlocks detected", deadlocks.len());
-        for (i, threads) in deadlocks.iter().enumerate() {
-            println!("Deadlock #{i}");
-            for t in threads {
-                println!("Thread Id {:#?}", t.thread_id());
-                println!("{:#?}", t.backtrace());
+            println!("{} deadlocks detected", deadlocks.len());
+            for (i, threads) in deadlocks.iter().enumerate() {
+                println!("Deadlock #{i}");
+                for t in threads {
+                    println!("Thread Id {:#?}", t.thread_id());
+                    println!("{:#?}", t.backtrace());
+                }
             }
         }
     });
@@ -333,6 +333,7 @@ async fn do_fix_images_mode() {
 
     let total = button_hash_to_page_id.len();
 
+    #[allow(clippy::too_many_arguments)]
     async fn re_encode_button_task(
         button_file_exts: &Arc<HashMap<String, CompactString>>,
         ctx: &scrape::ScrapeContext,
@@ -371,7 +372,7 @@ async fn do_fix_images_mode() {
                     .unwrap();
 
                 let scrape::image::DownloadImageResult { bytes, .. } =
-                    match scrape::image::download_88x31_image(&ctx, first_image_url).await {
+                    match scrape::image::download_88x31_image(ctx, first_image_url).await {
                         Ok(res) => res,
                         Err(e) => {
                             println!("couldn't download {old_hash}.{file_ext}: {e}");
@@ -396,7 +397,7 @@ async fn do_fix_images_mode() {
             }
         };
 
-        let Some(format) = image::ImageFormat::from_extension(&file_ext) else {
+        let Some(format) = image::ImageFormat::from_extension(file_ext) else {
             println!("{old_hash}.{file_ext} skipped because we couldn't determine the format");
             return;
         };
@@ -507,7 +508,8 @@ async fn do_fix_images_mode() {
         .unwrap();
 
     println!("deleting images...");
-    for (old_hash, file_ext) in to_delete.lock().drain(..) {
+    let to_delete = to_delete.lock().drain(..).collect::<Vec<_>>();
+    for (old_hash, file_ext) in to_delete {
         // delete the old one
         if let Err(e) = tokio::fs::remove_file(format!("data/buttons/{old_hash}.{file_ext}")).await
         {

@@ -96,7 +96,7 @@ impl PageRank {
             self.pages
                 .idx_mut(link as usize)
                 .inbound_links_and_weights
-                .push((page_idx as u32, link_weight));
+                .push((page_idx, link_weight));
         }
     }
 

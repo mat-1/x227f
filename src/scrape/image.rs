@@ -10,17 +10,17 @@ use std::{
 use base64::Engine;
 use eyre::{bail, eyre};
 use futures_util::StreamExt;
-use image::{codecs::gif, AnimationDecoder, ImageFormat};
+use image::{AnimationDecoder, ImageFormat, codecs::gif};
 use parking_lot::RwLock;
 use sha2::{Digest, Sha256};
 use tracing::{debug, error, instrument, trace, warn};
 use url::Url;
 
-use super::{page::CandidateButton, ScrapeContext};
+use super::{ScrapeContext, page::CandidateButton};
 use crate::{
+    RECRAWL_BUTTONS_INTERVAL_HOURS,
     data::{ButtonData, CachedButton, RedirectSource},
     scrape::get_redirect_target,
-    RECRAWL_BUTTONS_INTERVAL_HOURS,
 };
 
 pub async fn scrape_images(
@@ -183,7 +183,7 @@ pub async fn scrape_image(
 
 pub fn hash_image(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(&bytes);
+    hasher.update(bytes);
     let hash = hex::encode(hasher.finalize());
     // truncate to 32 bytes because big file names are ugly
     // pretty sure we won't get collisions anyways
@@ -495,12 +495,11 @@ fn transform_image_url_to_bypass_blocks(mut url: Url) -> Url {
 /// /_next/image when possible.
 fn transform_image_url_to_clean_up(mut url: Url) -> Url {
     // nextjs ruins images by making them webp and compressing them
-    if url.path() == "/_next/image" {
-        if let Some((_, url_param)) = url.query_pairs().find(|(k, _)| k == "url") {
-            if let Ok(new_url) = url.join(&url_param) {
-                url = new_url;
-            }
-        }
+    if url.path() == "/_next/image"
+        && let Some((_, url_param)) = url.query_pairs().find(|(k, _)| k == "url")
+        && let Ok(new_url) = url.join(&url_param)
+    {
+        url = new_url;
     }
 
     url

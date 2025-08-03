@@ -125,17 +125,15 @@ pub async fn download_page(ctx: &ScrapeContext, mut url: Url) -> eyre::Result<Do
         let request_duration = request_start.elapsed();
         debug!("page request took {request_duration:?}");
 
-        if allow_basic_redirect {
-            if let Some(redirect_target) = get_redirect_target(&res)
+        if allow_basic_redirect && let Some(redirect_target) = get_redirect_target(&res)
             // if the redirect is to a different url that has the same PageId, try downloading it again
             && redirect_target != *res.url()
             && PageId::from(&redirect_target) == PageId::from(res.url())
-            {
-                debug!("doing basic redirect to {redirect_target}");
-                url = redirect_target;
-                allow_basic_redirect = false;
-                continue;
-            }
+        {
+            debug!("doing basic redirect to {redirect_target}");
+            url = redirect_target;
+            allow_basic_redirect = false;
+            continue;
         }
 
         return Ok(DownloadPageResult { res });
@@ -319,21 +317,21 @@ fn transform_page_url_to_clean_up(mut url: Url) -> Url {
     }
 
     // if it's www.youtube.com/watch then remove any params except v
-    if url.host_str() == Some("www.youtube.com") && url.path() == "/watch" {
-        if let Some((_, video_id)) = url.query_pairs().find(|(key, _)| key == "v") {
-            url.set_query(Some(&format!("v={video_id}")));
-        }
+    if url.host_str() == Some("www.youtube.com")
+        && url.path() == "/watch"
+        && let Some((_, video_id)) = url.query_pairs().find(|(key, _)| key == "v")
+    {
+        url.set_query(Some(&format!("v={video_id}")));
     }
 
     // convert youtu.be/x to www.youtube.com/watch?v=x
-    if url.host_str() == Some("youtu.be") {
-        if let Some(video_id) = url.path_segments().and_then(|mut s| s.next()) {
-            url = match Url::parse_with_params("https://www.youtube.com/watch", &[("v", video_id)])
-            {
-                Ok(url) => url,
-                Err(_) => url,
-            };
-        }
+    if url.host_str() == Some("youtu.be")
+        && let Some(video_id) = url.path_segments().and_then(|mut s| s.next())
+    {
+        url = match Url::parse_with_params("https://www.youtube.com/watch", &[("v", video_id)]) {
+            Ok(url) => url,
+            Err(_) => url,
+        };
     }
 
     // not really a tracking param but remove url fragments (the #)

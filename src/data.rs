@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-use compact_str::{format_compact, CompactString, ToCompactString};
+use compact_str::{CompactString, ToCompactString, format_compact};
 use indexmap::IndexSet;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -15,9 +15,9 @@ use tracing::{error, info, trace, warn};
 use url::Url;
 
 use crate::{
-    check_hosts_list_contains_host, check_hosts_list_contains_url, pagerank::PageRank,
-    ratelimiter::Ratelimiter, BANNED_HOSTS, DO_NOT_FOLLOW_LINKS_FROM_HOSTS,
-    RECRAWL_PAGES_INTERVAL_HOURS, RECRAWL_POPULAR_PAGES_INTERVAL_HOURS, STARTING_POINT,
+    BANNED_HOSTS, DO_NOT_FOLLOW_LINKS_FROM_HOSTS, RECRAWL_PAGES_INTERVAL_HOURS,
+    RECRAWL_POPULAR_PAGES_INTERVAL_HOURS, STARTING_POINT, check_hosts_list_contains_host,
+    check_hosts_list_contains_url, pagerank::PageRank, ratelimiter::Ratelimiter,
 };
 
 /// Something that uniquely identifies a page. You can convert a URL to this,
@@ -231,7 +231,7 @@ impl CrawlerState {
                 warn!("getting page idx {page_idx} in known_page_ids failed!");
                 continue;
             };
-            if self.queued_or_crawling_pages.contains(&page_id) {
+            if self.queued_or_crawling_pages.contains(page_id) {
                 // page is already being crawled, no point in adding it to the queue again
                 continue;
             }
@@ -493,7 +493,7 @@ impl ButtonData {
     pub fn source_filename(&self) -> Option<CompactString> {
         if let Some(source) = &self.source {
             let path = source.path().trim_end_matches('/');
-            let filename = path.split('/').last().unwrap_or_default();
+            let filename = path.split('/').next_back().unwrap_or_default();
             let filename = filename.split('.').next().unwrap_or_default();
             Some(filename.to_compact_string())
         } else {
