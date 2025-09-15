@@ -44,8 +44,17 @@ pub const DO_NOT_FOLLOW_LINKS_FROM_HOSTS: &[&str] = &[
     "web.archive.org",   // duplicates content
     "phoenix-search.jp", // too many pages
     "ranking.prb.jp",    // too many pages
-    "charbroil.me"       // crawler abuse (ai spidertrap)
-];
+    "charbroil.me",      // crawler abuse (ai spidertrap)
+    "softkittypa.ws",    // crawler abuse
+    "squeakable.dev",    // crawler abuse
+    "trinkey.com",       // crawler abuse
+    "sn0w.cx",           // crawler abuse
+    "alloyed.me",        // crawler abuse
+    "sn0w.re",           // crawler abuse
+    "eir-nya.gay",       // crawler abuse
+    "rascals.kemono.cafe", // too many pages
+    "xkcd.com",          // too many pages
+]; 
 /// Hosts that shouldn't be scraped or indexed. Adding a host to this will
 /// retroactively remove it from the database.
 pub const BANNED_HOSTS: &[&str] = &[
