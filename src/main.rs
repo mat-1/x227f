@@ -20,6 +20,10 @@ use url::Url;
 
 use crate::data::{Page, get_pagerank_links_from_one_page};
 
+/// The user-agent header that's sent with every request.
+///
+/// If you're running the crawler yourself, please change this to have your own
+/// contact info.
 pub const USER_AGENT: &str =
     "Mozilla/5.0 (88x31 crawler by mat@matdoes.dev +https://github.com/mat-1/x227f)";
 /// The maximum number of pages that we can be crawling at the same time.
@@ -27,7 +31,7 @@ pub const CONCURRENT_CRAWLER_COUNT: usize = 100;
 /// How often we should recheck pages in the database.
 pub const RECRAWL_PAGES_INTERVAL_HOURS: u64 = 24 * 30;
 /// How often we should recheck "popular" pages in the database. The meaning of
-/// popular is based on an arbitrary pagerank score.
+/// popular depends on the value of POPULAR_PAGERANK_SCORE.
 pub const RECRAWL_POPULAR_PAGES_INTERVAL_HOURS: u64 = 24;
 /// How long buttons should be cached for. We won't explicitly go out and
 /// download them when this time expires, but we will download them again next
@@ -37,31 +41,51 @@ pub const RECRAWL_POPULAR_PAGES_INTERVAL_HOURS: u64 = 24;
 pub const RECRAWL_BUTTONS_INTERVAL_HOURS: u64 = 24 * 7;
 /// Url params that should be removed from page links before following and
 /// saving them.
-pub const KNOWN_TRACKING_PARAMS: &[&str] = &["ref"];
+pub const KNOWN_TRACKING_PARAMS: &[&str] = &["ref", "si"];
 /// Pages that we can scrape but shouldn't follow links from. This will also
 /// include all subdomains.
 pub const DO_NOT_FOLLOW_LINKS_FROM_HOSTS: &[&str] = &[
     "web.archive.org",   // duplicates content
-    "crimsongale.com",   // crawler abuse
-    "paddyk45.de",       // crawler abuse
     "phoenix-search.jp", // too many pages
     "ranking.prb.jp",    // too many pages
 ];
 /// Hosts that shouldn't be scraped or indexed. Adding a host to this will
 /// retroactively remove it from the database.
 pub const BANNED_HOSTS: &[&str] = &[
-    "prlog.ru",                  // too many pages
-    "strawberryfoundations.xyz", // crawler abuse
-    "paddyk45.duckdns.org",      // crawler abuse
-    "dvd-rank.com",              // nsfw
-    "adult-plus.com",            // nsfw
+    "prlog.ru",       // too many pages
+    "dvd-rank.com",   // nsfw
+    "adult-plus.com", // nsfw
 ];
 
 /// The page that's requested if the database is empty.
 pub const STARTING_POINT: &str = "https://matdoes.dev/retro";
 
+/// The minimum required pagerank score for a page to be able to be crawled.
+///
+/// This is intended as both an anti-abuse method and a form of prioritizing
+/// popular pages when doing quick recrawls.
+///
+/// Note that 0.15 is typically the minimum possible pagerank score, so there's
+/// no point in changing it to be below that.
+///
+/// Lowering this value will increase the amount of effort we put into crawling
+/// websites, which may be detrimental as it increases the chance that
+/// we'll fall for spam traps.
+pub const REQUIRED_PAGERANK_SCORE: f32 = 0.15 + 0.001;
+
+/// The pagerank score threshold for a page to be considered "popular", so we
+/// know to recrawl it more often.
+///
+/// This simply increases the crawl rate from RECRAWL_PAGES_INTERVAL_HOURS to
+/// RECRAWL_POPULAR_PAGES_INTERVAL_HOURS.
+pub const POPULAR_PAGERANK_SCORE: f32 = 0.2;
+
 /// Re-encode every 88x31 and exit instead of actually crawling.
 pub const FIX_IMAGES_MODE: bool = false;
+
+/// Periodically writes pagerank.txt and queue.txt files to the target
+/// directory.
+pub const DEBUG_MODE: bool = false;
 
 #[tokio::main]
 async fn main() {

@@ -1,6 +1,8 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fmt,
+    fs::{self, File},
+    io::Write,
     str::FromStr,
     sync::Arc,
     time::Duration,
@@ -15,9 +17,10 @@ use tracing::{error, info, trace, warn};
 use url::Url;
 
 use crate::{
-    BANNED_HOSTS, DO_NOT_FOLLOW_LINKS_FROM_HOSTS, RECRAWL_PAGES_INTERVAL_HOURS,
-    RECRAWL_POPULAR_PAGES_INTERVAL_HOURS, STARTING_POINT, check_hosts_list_contains_host,
-    check_hosts_list_contains_url, pagerank::PageRank, ratelimiter::Ratelimiter,
+    BANNED_HOSTS, DEBUG_MODE, DO_NOT_FOLLOW_LINKS_FROM_HOSTS, POPULAR_PAGERANK_SCORE,
+    RECRAWL_PAGES_INTERVAL_HOURS, RECRAWL_POPULAR_PAGES_INTERVAL_HOURS, REQUIRED_PAGERANK_SCORE,
+    STARTING_POINT, check_hosts_list_contains_host, check_hosts_list_contains_url,
+    pagerank::PageRank, ratelimiter::Ratelimiter,
 };
 
 /// Something that uniquely identifies a page. You can convert a URL to this,
@@ -214,17 +217,18 @@ impl CrawlerState {
             pagerank.do_iteration();
         }
 
-        // let mut f = std::fs::File::create("target/pagerank.txt.tmp").unwrap();
-        // pagerank.write_top_scores(&mut f, 100_000, &self.known_page_ids);
-        // std::fs::rename("target/pagerank.txt.tmp", "target/pagerank.txt").unwrap();
+        if DEBUG_MODE {
+            let mut f = File::create("target/pagerank.txt.tmp").unwrap();
+            pagerank.write_top_scores(&mut f, 100_000, &self.known_page_ids);
+            fs::rename("target/pagerank.txt.tmp", "target/pagerank.txt").unwrap();
+        }
 
         let top_scores = pagerank.get_all_sorted();
 
         let mut adding_to_queue = Vec::new();
         for (page_idx, pagerank_score) in top_scores {
-            // note that 0.15 is typically the lowest (due to the pagerank damping factor)
-            if pagerank_score < 0.151 {
-                // pagerank score too low, not worth scraping :sleeping:
+            if pagerank_score < REQUIRED_PAGERANK_SCORE {
+                // pagerank score too low, not worth scraping
                 break;
             }
             let Some(page_id) = self.known_page_ids.get_index(page_idx as usize) else {
@@ -236,7 +240,7 @@ impl CrawlerState {
                 continue;
             }
 
-            let is_page_popular = pagerank_score > 0.2;
+            let is_page_popular = pagerank_score > POPULAR_PAGERANK_SCORE;
             let recrawl_interval = chrono::Duration::hours(if is_page_popular {
                 RECRAWL_POPULAR_PAGES_INTERVAL_HOURS
             } else {
@@ -278,12 +282,13 @@ impl CrawlerState {
             self.add_to_queue(url);
         }
 
-        // use std::io::Write;
-        // let mut f = std::fs::File::create("target/queue.txt.tmp").unwrap();
-        // for u in self.queue() {
-        //     writeln!(f, "{u}").unwrap();
-        // }
-        // std::fs::rename("target/queue.txt.tmp", "target/queue.txt").unwrap();
+        if DEBUG_MODE {
+            let mut f = File::create("target/queue.txt.tmp").unwrap();
+            for u in self.queue() {
+                writeln!(f, "{u}").unwrap();
+            }
+            fs::rename("target/queue.txt.tmp", "target/queue.txt").unwrap();
+        }
     }
 
     pub fn get_page_mut(&mut self, page_id: &PageId) -> Option<&mut Page> {
