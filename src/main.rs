@@ -37,22 +37,19 @@ pub const RECRAWL_POPULAR_PAGES_INTERVAL_HOURS: u64 = 24;
 pub const RECRAWL_BUTTONS_INTERVAL_HOURS: u64 = 24 * 7;
 /// Url params that should be removed from page links before following and
 /// saving them.
-pub const KNOWN_TRACKING_PARAMS: &[&str] = &["ref"];
+pub const KNOWN_TRACKING_PARAMS: &[&str] = &["ref", "si"];
 /// Pages that we can scrape but shouldn't follow links from. This will also
 /// include all subdomains.
 pub const DO_NOT_FOLLOW_LINKS_FROM_HOSTS: &[&str] = &[
     "web.archive.org",   // duplicates content
-    "crimsongale.com",   // crawler abuse
-    "paddyk45.de",       // crawler abuse
     "phoenix-search.jp", // too many pages
     "ranking.prb.jp",    // too many pages
+    "charbroil.me"       // crawler abuse (ai spidertrap)
 ];
 /// Hosts that shouldn't be scraped or indexed. Adding a host to this will
 /// retroactively remove it from the database.
 pub const BANNED_HOSTS: &[&str] = &[
     "prlog.ru",                  // too many pages
-    "strawberryfoundations.xyz", // crawler abuse
-    "paddyk45.duckdns.org",      // crawler abuse
     "dvd-rank.com",              // nsfw
     "adult-plus.com",            // nsfw
 ];
