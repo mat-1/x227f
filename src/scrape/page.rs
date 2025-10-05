@@ -61,7 +61,7 @@ pub async fn scrape_page_from_download(
         }
     };
 
-    if !content_type.starts_with("text/html") {
+    if !(content_type.starts_with("text/html") || content_type.starts_with("application/xhtml")) {
         bail!("skipping non-html page: {content_type}");
     }
 
