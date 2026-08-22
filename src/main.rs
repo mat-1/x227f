@@ -58,7 +58,7 @@ pub const BANNED_HOSTS: &[&str] = &[
 ];
 
 /// The page that's requested if the database is empty.
-pub const STARTING_POINT: &str = "https://matdoes.dev/retro";
+pub const STARTING_POINT: &str = "https://matdoes.dev";
 
 /// The minimum required pagerank score for a page to be able to be crawled.
 ///
